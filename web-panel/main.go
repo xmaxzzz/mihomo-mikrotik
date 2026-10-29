@@ -1,7 +1,8 @@
 // mihomo-web — веб-управление серверами для образа mihomo-mikrotik.
 //
 //	mihomo-web render  — сгенерировать servers.txt из servers.json (вызывается entrypoint до старта mihomo)
-//	mihomo-web serve   — веб-панель + супервизор naive
+//	mihomo-web serve   — веб-панель + супервизор naive + монитор трафика
+//	mihomo-web menu    — то же управление в консоли (через unix-сокет панели)
 package main
 
 import (
@@ -14,6 +15,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +49,12 @@ type Config struct {
 	GroupSel  string
 	GroupMan  string
 	TimeoutMs int
+
+	Socket      string        // unix-сокет для консоли (без пароля, только root)
+	MonInterval time.Duration // опрос соединений; 0 = монитор выключен
+	StatusEvery time.Duration // сводка в журнал (RouterOS); 0 = выкл
+	LogConns    bool          // каждое новое соединение в журнал
+	StreamLevel string        // уровень журнала mihomo для веба/консоли
 }
 
 func env(k, def string) string {
@@ -82,7 +90,23 @@ func loadConfig() Config {
 		GroupSel:  env("WEB_GROUP_SELECTOR", "SELECTOR"),
 		GroupMan:  env("WEB_GROUP_MANUAL", "MANUAL"),
 		TimeoutMs: envInt("HEALTH_CHECK_TIMEOUT", 5000),
+
+		Socket:      env("WEB_SOCKET", "/run/mihomo-web.sock"),
+		MonInterval: time.Duration(envInt("WEB_MONITOR_INTERVAL", 5)) * time.Second,
+		StatusEvery: time.Duration(envInt("WEB_LOG_STATUS", 300)) * time.Second,
+		LogConns:    envBool("WEB_LOG_CONNECTIONS", false),
+		StreamLevel: env("WEB_LOG_STREAM_LEVEL", "info"),
 	}
+}
+
+func envBool(k string, def bool) bool {
+	switch strings.ToLower(env(k, "")) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
 }
 
 func main() {
@@ -92,6 +116,9 @@ func main() {
 		cmd = os.Args[1]
 	}
 	cfg := loadConfig()
+	if isCLI(cmd) {
+		os.Exit(runCLI(cfg, cmd, os.Args[2:]))
+	}
 	store, err := NewStore(cfg.DataDir, cfg.NaiveBase)
 	if err != nil {
 		logger.Error("store init failed", "err", err)
@@ -109,7 +136,7 @@ func main() {
 	case "version", "-v", "--version":
 		fmt.Println(version)
 	default:
-		fmt.Fprintf(os.Stderr, "usage: %s [serve|render|version]\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "usage: %s [serve|render|version|menu|status|list|use|mode|test|conns|logs]\n", os.Args[0])
 		os.Exit(2)
 	}
 }
@@ -119,6 +146,7 @@ type App struct {
 	store  *Store
 	mh     *Mihomo
 	naive  *NaiveManager
+	mon    *Monitor
 	log    *slog.Logger
 	applyM sync.Mutex
 }
@@ -131,6 +159,10 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 		naive: NewNaiveManager(cfg.NaiveBin, cfg.NaiveUID, cfg.NaiveDNS, logger),
 		log:   logger,
 	}
+	app.mon = NewMonitor(app.mh, logger, cfg.MonInterval, cfg.StatusEvery, cfg.LogConns, cfg.GroupSel, cfg.StreamLevel)
+	monCtx, monStop := context.WithCancel(context.Background())
+	defer monStop()
+	go app.mon.Run(monCtx)
 	if err := store.Render(); err != nil {
 		logger.Error("render failed", "err", err)
 	}
@@ -142,7 +174,7 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 
 	srv := &http.Server{
 		Addr:              cfg.Listen,
-		Handler:           app.routes(),
+		Handler:           app.routes(false),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      90 * time.Second,
@@ -153,6 +185,16 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 		logger.Info("listening", "addr", cfg.Listen, "version", version, "naive", app.naive.Available())
 		errCh <- srv.ListenAndServe()
 	}()
+	// консоль: unix-сокет, доступ только у root внутри контейнера — без пароля
+	var sockSrv *http.Server
+	if cfg.Socket != "" && cfg.Socket != "off" {
+		if ln, err := listenUnix(cfg.Socket); err != nil {
+			logger.Warn("console socket disabled", "path", cfg.Socket, "err", err)
+		} else {
+			sockSrv = &http.Server{Handler: app.routes(true), ReadHeaderTimeout: 10 * time.Second}
+			go func() { _ = sockSrv.Serve(ln) }()
+		}
+	}
 	// первичная синхронизация с mihomo, когда тот поднимется
 	go func() {
 		for i := 0; i < 60; i++ {
@@ -186,11 +228,15 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(ctx)
+	if sockSrv != nil {
+		_ = sockSrv.Shutdown(ctx)
+		_ = os.Remove(cfg.Socket)
+	}
 	app.naive.StopAll()
 	return 0
 }
 
-func (a *App) routes() http.Handler {
+func (a *App) routes(local bool) http.Handler {
 	mux := http.NewServeMux()
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /", http.FileServer(http.FS(sub)))
@@ -206,17 +252,20 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("POST /api/reorder", a.hReorder)
 	mux.HandleFunc("GET /api/export", a.hExport)
 	mux.HandleFunc("POST /api/import", a.hImport)
+	mux.HandleFunc("GET /api/activity", a.hActivity)
+	mux.HandleFunc("GET /api/connections", a.hConnections)
+	mux.HandleFunc("GET /api/logs", a.hLogs)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("ok")) })
-	return a.middleware(mux)
+	return a.middleware(mux, local)
 }
 
-func (a *App) middleware(next http.Handler) http.Handler {
+func (a *App) middleware(next http.Handler, local bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		if r.URL.Path != "/healthz" && a.cfg.Password != "" {
+		if !local && r.URL.Path != "/healthz" && a.cfg.Password != "" {
 			u, p, ok := r.BasicAuth()
 			if !ok ||
 				subtle.ConstantTimeCompare([]byte(u), []byte(a.cfg.User)) != 1 ||
@@ -233,7 +282,11 @@ func (a *App) middleware(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 		if strings.HasPrefix(r.URL.Path, "/api/") && r.Method != http.MethodGet {
-			a.log.Info("api", "method", r.Method, "path", r.URL.Path, "remote", r.RemoteAddr, "dur", time.Since(start).Round(time.Millisecond))
+			remote := r.RemoteAddr
+			if local {
+				remote = "console"
+			}
+			a.log.Info("api", "method", r.Method, "path", r.URL.Path, "remote", remote, "dur", time.Since(start).Round(time.Millisecond))
 		}
 	})
 }
@@ -486,6 +539,8 @@ func (a *App) hUse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
+	a.mon.Event("info", "выбран вручную: "+name)
+	go a.mon.pollVia(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": name})
 }
 
@@ -509,6 +564,8 @@ func (a *App) hMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
+	a.mon.Event("info", "режим: "+req.Mode)
+	go a.mon.pollVia(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
@@ -598,4 +655,41 @@ func short(s string) string {
 		return s[:i+3+12] + "…"
 	}
 	return s
+}
+
+func (a *App) hActivity(w http.ResponseWriter, r *http.Request) {
+	n, _ := strconv.Atoi(r.URL.Query().Get("recent"))
+	if n <= 0 {
+		n = 30
+	}
+	writeJSON(w, http.StatusOK, a.mon.Activity(n))
+}
+
+func (a *App) hConnections(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"connections": a.mon.Connections()})
+}
+
+func (a *App) hLogs(w http.ResponseWriter, r *http.Request) {
+	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 || limit > logMax {
+		limit = 200
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"lines": a.mon.Logs(after, limit, r.URL.Query().Get("q")), "level": a.cfg.StreamLevel})
+}
+
+func listenUnix(path string) (net.Listener, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
+	_ = os.Remove(path) // остался от прошлого запуска
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		ln.Close()
+		return nil, err
+	}
+	return ln, nil
 }

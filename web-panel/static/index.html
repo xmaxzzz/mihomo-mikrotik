@@ -93,6 +93,33 @@ dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);c
 dialog::backdrop{background:rgb(0 0 0/.45)}
 dialog h3{margin:0 0 12px;font-size:17px}
 pre.log{background:var(--field);border:1px solid var(--line);border-radius:7px;padding:10px;max-height:52vh;overflow:auto;font-size:12px;white-space:pre-wrap;margin:0}
+.act{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.stats{display:flex;flex-wrap:wrap;gap:6px 22px;align-items:baseline}
+.stat b{font-size:20px;font-variant-numeric:tabular-nums;font-weight:650}
+.stat span{color:var(--muted);font-size:13px;margin-left:4px}
+.spark{display:block;width:100%;height:46px;margin:10px 0 4px}
+.spark path.dn{fill:color-mix(in srgb,var(--accent) 22%,transparent);stroke:var(--accent);stroke-width:1.5}
+.spark path.up{fill:none;stroke:var(--warn);stroke-width:1.2;stroke-dasharray:3 2}
+.sparkcap{color:var(--muted);font-size:12px;display:flex;justify-content:space-between}
+.reqs{margin:10px 0 0;padding:0;list-style:none;font-size:13px}
+.reqs li{display:grid;grid-template-columns:62px 112px minmax(0,1fr) auto;gap:8px;padding:4px 0;border-top:1px solid var(--line);align-items:baseline}
+.reqs li:first-child{border-top:0}
+.reqs .t,.reqs .src{color:var(--muted);font-variant-numeric:tabular-nums}
+.reqs .dst{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.via{font-weight:600;color:var(--ok)} .via.direct{color:var(--warn)} .via.rej{color:var(--bad)} .via.int{color:var(--muted);font-weight:400}
+.evs{margin:10px 0 0;font-size:13px;color:var(--muted)}
+.evs div{padding:2px 0}
+.evs .bad{color:var(--bad)} .evs .warn{color:var(--warn)}
+.note{margin-top:8px;font-size:13px;color:var(--warn);grid-column:1/-1}
+table.conns{width:100%;border-collapse:collapse;font-size:12.5px}
+table.conns th{text-align:left;color:var(--muted);font-weight:500;padding:4px 6px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel)}
+table.conns td{padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
+table.conns td.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
+.scroll{max-height:60vh;overflow:auto;border:1px solid var(--line);border-radius:7px}
+dialog.wide{width:min(980px,96vw)}
+.filter{display:flex;gap:8px;margin-bottom:10px;align-items:center}
+.filter input{max-width:280px}
+@media (max-width:760px){ .reqs li{grid-template-columns:54px minmax(0,1fr) auto} .reqs .src{display:none} }
 footer{margin-top:26px;color:var(--muted);font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 
 @media (max-width:760px){
@@ -119,7 +146,25 @@ footer{margin-top:26px;color:var(--muted);font-size:13px;display:flex;gap:8px;fl
     </div>
     <div class="ping" id="routePing"></div>
     <div class="modes" id="modes" role="group" aria-label="Режим выбора сервера"></div>
+    <div class="note" id="routeNote" hidden></div>
   </div>
+
+  <section>
+    <div class="bar">
+      <h2>Активность</h2>
+      <div class="acts">
+        <button class="btn" id="connBtn">Соединения</button>
+        <button class="btn" id="mlogBtn">Журнал mihomo</button>
+      </div>
+    </div>
+    <div class="act" aria-live="off">
+      <div class="stats" id="stats"><span class="stat"><span>Загрузка…</span></span></div>
+      <svg class="spark" id="spark" viewBox="0 0 300 46" preserveAspectRatio="none" aria-hidden="true"></svg>
+      <div class="sparkcap"><span id="sparkL"></span><span>— приём · - - отдача</span></div>
+      <ul class="reqs" id="reqs"></ul>
+      <div class="evs" id="evs"></div>
+    </div>
+  </section>
 
   <section>
     <details class="add" id="addBox">
@@ -180,6 +225,20 @@ footer{margin-top:26px;color:var(--muted);font-size:13px;display:flex;gap:8px;fl
   <div class="actions"><button class="btn" id="logRefresh">Обновить</button><button class="btn" id="logClose">Закрыть</button></div>
 </dialog>
 
+<dialog id="connDlg" class="wide">
+  <h3>Текущие соединения</h3>
+  <div class="filter"><input id="connQ" placeholder="Фильтр: адрес, сайт, сервер" spellcheck="false"><span class="sys" id="connSum"></span></div>
+  <div class="scroll"><table class="conns"><thead><tr><th>Начало</th><th>Клиент</th><th>Куда</th><th>Через</th><th>Правило</th><th class="n">↓</th><th class="n">↑</th></tr></thead><tbody id="connBody"></tbody></table></div>
+  <div class="actions"><button class="btn" id="connClose">Закрыть</button></div>
+</dialog>
+
+<dialog id="mlogDlg" class="wide">
+  <h3>Журнал mihomo</h3>
+  <div class="filter"><input id="mlogQ" placeholder="Фильтр" spellcheck="false"><label class="check" style="margin:0"><input type="checkbox" id="mlogFollow" checked> вживую</label></div>
+  <pre class="log" id="mlogBody"></pre>
+  <div class="actions"><button class="btn" id="mlogClose">Закрыть</button></div>
+</dialog>
+
 <div id="toast" role="status"></div>
 
 <script>
@@ -235,6 +294,10 @@ function render(){
     if (now===s.placeholder) { now="Нет включённых серверов — трафик идёт напрямую"; ping=""; }
   }
   $("#routeNow").textContent=now; $("#routePing").innerHTML=ping;
+  const curSrv = s.servers.find(x=>x.active);
+  const tcpOnly = s.mode!=="DIRECT" && curSrv && curSrv.type==="naive";
+  $("#routeNote").hidden = !tcpOnly;
+  if (tcpOnly) $("#routeNote").textContent = "Naive передаёт только TCP: QUIC (UDP 443) и звонки по UDP через этот сервер не пойдут — они блокируются, мимо VPN не уходят. Для звонков выберите сервер с UDP (Hysteria2, VLESS).";
   $("#routeLbl").textContent = s.mode ? "Трафик идёт через ("+((MODES.find(x=>x[0]===s.mode)||[,s.mode])[1]).toLowerCase()+")" : "Трафик идёт через";
 
   // список
@@ -436,7 +499,81 @@ $("#importFile").onchange=async e=>{
   });
 };
 
-renderTabs(); load(); setInterval(()=>{ if(!busy && !document.hidden && !$("#editDlg").open) load(); }, 10000);
+// ---------- активность ----------
+function rate(bps){ const b=bps*8; if(b>=1e6) return (b/1e6).toFixed(1)+" Мбит/с"; if(b>=1e3) return Math.round(b/1e3)+" кбит/с"; return Math.round(b)+" бит/с"; }
+function bytes(n){ if(n>=2**30) return (n/2**30).toFixed(2)+" ГБ"; if(n>=2**20) return (n/2**20).toFixed(1)+" МБ"; if(n>=1024) return Math.round(n/1024)+" КБ"; return n+" Б"; }
+const hhmmss = t => new Date(t).toLocaleTimeString("ru-RU",{hour12:false});
+function viaCls(v,c){ if(c&&c.internal) return "via int"; return v==="DIRECT"?"via direct":(String(v).startsWith("REJECT")?"via rej":"via"); }
+function viaTxt(v,c){ if(c&&c.internal) return "служебное"; return v==="DIRECT"?"напрямую":(String(v).startsWith("REJECT")?"заблокировано":v); }
+function dstOf(c){ return (c.host||c.dst_ip)+(c.port?":"+c.port:""); }
+
+async function loadActivity(){
+  let a; try { a = await api("GET","/api/activity?recent=12"); } catch(e){ $("#stats").innerHTML='<span class="stat"><span>'+esc(e.message)+'</span></span>'; return; }
+  if (!a.interval){ $("#stats").innerHTML='<span class="stat"><span>Монитор выключен (WEB_MONITOR_INTERVAL=0)</span></span>'; return; }
+  if (!a.ok){ $("#stats").innerHTML='<span class="stat"><span class="dot bad"></span><span>mihomo не отвечает: '+esc(a.error||"")+'</span></span>'; }
+  else {
+    const byVia = Object.entries(a.by_via||{}).sort((x,y)=>y[1]-x[1]).map(([k,n])=>esc(viaTxt(k))+" "+n).join(", ");
+    $("#stats").innerHTML =
+      '<span class="stat"><b>↓ '+rate(a.down_rate)+'</b></span>'+
+      '<span class="stat"><b>↑ '+rate(a.up_rate)+'</b></span>'+
+      '<span class="stat"><b>'+a.conns+'</b><span>соединений'+(byVia?" ("+byVia+")":"")+'</span></span>'+
+      '<span class="stat"><span>всего ↓ '+bytes(a.down_total)+' · ↑ '+bytes(a.up_total)+'</span></span>';
+  }
+  drawSpark(a.history||[], a.interval);
+  const rec=a.recent||[];
+  $("#reqs").innerHTML = rec.length ? rec.map(c=>'<li><span class="t">'+hhmmss(c.start)+'</span><span class="src">'+esc(c.src)+'</span><span class="dst" title="'+esc(dstOf(c)+" · "+c.rule)+'">'+esc(dstOf(c))+'</span><span class="'+viaCls(c.via,c)+'">'+esc(viaTxt(c.via,c))+'</span></li>').join("")
+    : '<li><span></span><span></span><span class="dst" style="color:var(--muted)">Новых запросов пока нет. Сюда идёт только трафик к сайтам из списка роутера.</span><span></span></li>';
+  const ev=(a.events||[]).slice(0,4);
+  $("#evs").innerHTML = ev.map(e=>'<div class="'+(e.level==="bad"?"bad":e.level==="warn"?"warn":"")+'">'+hhmmss(e.t)+' — '+esc(e.msg)+'</div>').join("");
+}
+function drawSpark(h, step){
+  const W=300,H=46, mx=Math.max(1,...h.map(p=>Math.max(p.down,p.up)));
+  const pts=k=>h.map((p,i)=>[(h.length<2?W:i*W/(h.length-1)), H-2-(p[k]/mx)*(H-6)]);
+  const line=a=>a.map((p,i)=>(i?"L":"M")+p[0].toFixed(1)+" "+p[1].toFixed(1)).join(" ");
+  if (!h.length){ $("#spark").innerHTML=""; $("#sparkL").textContent=""; return; }
+  const dn=pts("down"), up=pts("up");
+  $("#spark").innerHTML='<path class="dn" d="'+line(dn)+' L'+W+' '+H+' L0 '+H+' Z"/><path class="up" d="'+line(up)+'"/>';
+  $("#sparkL").textContent="за "+Math.max(1,Math.round(h.length*(step||5)/60))+" мин, пик "+rate(mx);
+}
+
+let connT=null;
+async function loadConns(){
+  try{
+    const r=await api("GET","/api/connections"), q=$("#connQ").value.trim().toLowerCase();
+    const all=r.connections||[], rows=all.filter(c=>!q || (c.host+" "+c.dst_ip+" "+c.src+" "+c.via+" "+c.rule).toLowerCase().includes(q));
+    $("#connSum").textContent="всего "+all.length+(q?", по фильтру "+rows.length:"");
+    $("#connBody").innerHTML=rows.slice(0,300).map(c=>'<tr><td>'+hhmmss(c.start)+'</td><td>'+esc(c.src)+'</td><td>'+esc(c.net+" "+dstOf(c))+'</td><td class="'+viaCls(c.via,c)+'">'+esc(viaTxt(c.via,c))+'</td><td>'+esc(c.rule)+'</td><td class="n">'+bytes(c.down)+'</td><td class="n">'+bytes(c.up)+'</td></tr>').join("")
+      || '<tr><td colspan="7" style="color:var(--muted)">Нет соединений</td></tr>';
+  }catch(e){ $("#connSum").textContent=e.message; }
+}
+$("#connBtn").onclick=()=>{ $("#connDlg").showModal(); loadConns(); clearInterval(connT); connT=setInterval(loadConns,3000); };
+$("#connClose").onclick=()=>$("#connDlg").close();
+$("#connDlg").addEventListener("close",()=>clearInterval(connT));
+$("#connQ").addEventListener("input",loadConns);
+
+let mlogT=null, mlogSeq=0;
+async function loadMlog(reset){
+  try{
+    const q=$("#mlogQ").value.trim();
+    if (reset){ mlogSeq=0; $("#mlogBody").textContent=""; }
+    const r=await api("GET","/api/logs?limit=300&after="+mlogSeq+(q?"&q="+encodeURIComponent(q):""));
+    const lines=r.lines||[], box=$("#mlogBody"), atEnd=box.scrollTop+box.clientHeight>=box.scrollHeight-20;
+    if (lines.length){ mlogSeq=lines[lines.length-1].seq; box.textContent += lines.map(l=>hhmmss(l.t)+" "+l.text).join("\n")+"\n"; }
+    else if (reset) box.textContent = r.level==="off" ? "Поток журнала выключен (WEB_LOG_STREAM_LEVEL=off)" : "Пока пусто. Строки появятся с первыми запросами.\n";
+    if (box.textContent.length>400000) box.textContent=box.textContent.slice(-300000);
+    if (atEnd) box.scrollTop=box.scrollHeight;
+  }catch(e){ $("#mlogBody").textContent=e.message; }
+}
+function mlogTimer(){ clearInterval(mlogT); if ($("#mlogFollow").checked) mlogT=setInterval(()=>loadMlog(false),2000); }
+$("#mlogBtn").onclick=()=>{ $("#mlogDlg").showModal(); loadMlog(true); mlogTimer(); };
+$("#mlogClose").onclick=()=>$("#mlogDlg").close();
+$("#mlogDlg").addEventListener("close",()=>clearInterval(mlogT));
+$("#mlogFollow").onchange=mlogTimer;
+$("#mlogQ").addEventListener("input",()=>loadMlog(true));
+
+renderTabs(); load(); loadActivity();
+setInterval(()=>{ if(!busy && !document.hidden && !$("#editDlg").open) load(); }, 10000);
+setInterval(()=>{ if(!document.hidden) loadActivity(); }, 5000);
 </script>
 </body>
 </html>

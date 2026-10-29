@@ -139,6 +139,8 @@ add list=PROXY_CLIENTS address=192.168.88.50 comment="тестовый ноут�
 /container print where comment=mihomo                  # running
 /log print where topics~"container"                     # "mihomo-web: http://..." и без fatal
 /system/resource print                                  # free-memory, free-hdd-space
+/log print where message~"status:|route"                # сводка монитора раз в 5 минут, смена сервера
+/container shell [find comment=mihomo]                  # затем: vpn status  (или vpn — меню)
 ```
 
 С тестового устройства:

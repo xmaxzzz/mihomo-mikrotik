@@ -97,7 +97,9 @@ RUN cd /web-panel && \
     export GOOS=$TARGETOS && \
     CGO_ENABLED=0 go build -trimpath -ldflags "-w -s -buildid= -X main.version=$(date -u +%Y%m%d.%H%M)" \
         -o /tmp/build/usr/bin/mihomo-web . && \
-    chmod +x /tmp/build/usr/bin/mihomo-web
+    chmod +x /tmp/build/usr/bin/mihomo-web && \
+    printf '#!/bin/sh\n# консольное меню серверов: vpn (меню) | vpn status | vpn list | vpn use N ...\n[ $# -eq 0 ] && set -- menu\nexec /usr/bin/mihomo-web "$@"\n' > /tmp/build/usr/bin/vpn && \
+    chmod +x /tmp/build/usr/bin/vpn
 
 # naiveproxy (клиент). Для armv7 — static musl, для arm64 — static, для amd64 — musl (нужен libgcc)
 RUN if [ "$WITH_NAIVE" != "1" ]; then echo "naive disabled"; exit 0; fi; \

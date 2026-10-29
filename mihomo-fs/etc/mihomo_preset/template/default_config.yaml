@@ -88,5 +88,8 @@ $TUN_IN_AUTOCONFIG
 rules:
   - AND,((NETWORK,udp),(DST-PORT,443)),QUIC UDP 443
   - IN-NAME,tun-in,SELECTOR
+  # Выход без UDP (naive, SOCKS5 без udp): mihomo пропускает правило выше для UDP,
+  # и трафик из списка уходил бы в MATCH,GLOBAL (DIRECT) мимо VPN. Режем его здесь.
+  - IN-NAME,tun-in,REJECT
   - IN-NAME,mixed-in,SELECTOR
   - MATCH,GLOBAL
