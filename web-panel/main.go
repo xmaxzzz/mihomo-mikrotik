@@ -116,6 +116,9 @@ func main() {
 		cmd = os.Args[1]
 	}
 	cfg := loadConfig()
+	if strings.HasPrefix(cmd, "-") && cmd != "-v" && cmd != "--version" { // vpn --utf8 → меню с флагом
+		os.Exit(runCLI(cfg, "menu", os.Args[1:]))
+	}
 	if isCLI(cmd) {
 		os.Exit(runCLI(cfg, cmd, os.Args[2:]))
 	}
@@ -159,6 +162,13 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 		naive: NewNaiveManager(cfg.NaiveBin, cfg.NaiveUID, cfg.NaiveDNS, logger),
 		log:   logger,
 	}
+	// Порт занимаем первым: второй экземпляр (ручной `mihomo-web serve`) должен упасть сразу,
+	// не трогая naive и unix-сокет работающей панели.
+	tcpLn, err := net.Listen("tcp", cfg.Listen)
+	if err != nil {
+		logger.Error("http server", "err", err)
+		return 1
+	}
 	app.mon = NewMonitor(app.mh, logger, cfg.MonInterval, cfg.StatusEvery, cfg.LogConns, cfg.GroupSel, cfg.StreamLevel)
 	monCtx, monStop := context.WithCancel(context.Background())
 	defer monStop()
@@ -183,7 +193,7 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("listening", "addr", cfg.Listen, "version", version, "naive", app.naive.Available())
-		errCh <- srv.ListenAndServe()
+		errCh <- srv.Serve(tcpLn)
 	}()
 	// консоль: unix-сокет, доступ только у root внутри контейнера — без пароля
 	var sockSrv *http.Server

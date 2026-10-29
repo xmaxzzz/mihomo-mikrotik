@@ -65,6 +65,10 @@ vpn conns youtube
 vpn logs -f youtube
 ```
 
+Терминал RouterOS (WinBox, SSH на роутер) выбрасывает всё, что не ASCII, поэтому по умолчанию консоль
+печатает транслитом (`Trafik cherez: DE`, значки `* -> v ^`). В нормальном терминале (SSH из Windows Terminal,
+`docker exec`) — `vpn --utf8` или `VPN_UTF8=1`; при `LANG=*.UTF-8` кириллица включается сама.
+
 ## Утечки UDP мимо VPN
 
 Naive (и SOCKS5 без UDP) передаёт только TCP. Для UDP mihomo пропускает правило `IN-NAME,tun-in,SELECTOR`,

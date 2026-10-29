@@ -39,7 +39,22 @@ type cli struct {
 }
 
 func runCLI(cfg Config, cmd string, args []string) int {
-	c := newCLI(cfg)
+	c := newCLI(cfg) // цвет решаем по настоящему stdout, до подмены фильтром
+	var forceUTF8, forceASCII bool
+	rest := args[:0:0]
+	for _, a := range args {
+		switch a {
+		case "--utf8", "-u", "--utf-8":
+			forceUTF8 = true
+		case "--ascii", "-a":
+			forceASCII = true
+		default:
+			rest = append(rest, a)
+		}
+	}
+	args = rest
+	restore := setupOutput(forceUTF8, forceASCII)
+	defer restore()
 	var err error
 	switch cmd {
 	case "menu", "tui":
@@ -217,10 +232,16 @@ func (c *cli) clear() {
 
 // pad/cut по числу символов, а не байт (кириллица).
 func pad(s string, w int) string {
+	if asciiOut {
+		s = translit(s) // ширина — после транслита, иначе колонки поедут
+	}
 	n := utf8.RuneCountInString(s)
 	if n > w {
 		r := []rune(s)
 		if w > 1 {
+			if asciiOut {
+				return string(r[:w-1]) + "~"
+			}
 			return string(r[:w-1]) + "…"
 		}
 		return string(r[:w])
@@ -229,6 +250,9 @@ func pad(s string, w int) string {
 }
 
 func padL(s string, w int) string {
+	if asciiOut {
+		s = translit(s)
+	}
 	n := utf8.RuneCountInString(s)
 	if n >= w {
 		return s
@@ -752,6 +776,8 @@ func (c *cli) help() {
   l N         журнал naive N        b         бэкап (JSON на экран)
   q           выход
 Разовые команды: vpn status | list | use N | mode auto | test [N] | conns [текст] | logs [-f] [текст]
+Терминал RouterOS не показывает кириллицу — по умолчанию вывод транслитом.
+В нормальном SSH-терминале: vpn --utf8 (или VPN_UTF8=1, LANG=*.UTF-8).
 `)
 }
 
