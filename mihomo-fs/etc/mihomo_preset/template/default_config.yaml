@@ -79,6 +79,19 @@ $PROVIDERS_LIST
       - PASS
       - REJECT
 
+  # UDP из списка, когда выбранный сервер его не умеет (naive, SOCKS5):
+  # самый быстрый живой сервер с UDP; если таких нет — REJECT (первый в группе), но не DIRECT
+  - name: UDP
+    type: url-test
+    proxies:
+      - REJECT
+    use:
+$PROVIDERS_LIST
+    exclude-type: "Socks5|Http|Direct"
+    <<: *health-check
+    lazy: false
+    tolerance: $TOLERANCE
+
 listeners:
   - name: mixed-in
     type: mixed
@@ -89,7 +102,9 @@ rules:
   - AND,((NETWORK,udp),(DST-PORT,443)),QUIC UDP 443
   - IN-NAME,tun-in,SELECTOR
   # Выход без UDP (naive, SOCKS5 без udp): mihomo пропускает правило выше для UDP,
-  # и трафик из списка уходил бы в MATCH,GLOBAL (DIRECT) мимо VPN. Режем его здесь.
+  # и трафик из списка уходил бы в MATCH,GLOBAL (DIRECT) мимо VPN.
+  # UDP — через сервер с UDP (группа UDP), остальное — REJECT, мимо VPN ничего.
+  - AND,((IN-NAME,tun-in),(NETWORK,udp)),UDP
   - IN-NAME,tun-in,REJECT
   - IN-NAME,mixed-in,SELECTOR
   - MATCH,GLOBAL

@@ -297,7 +297,7 @@ function render(){
   const curSrv = s.servers.find(x=>x.active);
   const tcpOnly = s.mode!=="DIRECT" && curSrv && curSrv.type==="naive";
   $("#routeNote").hidden = !tcpOnly;
-  if (tcpOnly) $("#routeNote").textContent = "Naive передаёт только TCP: QUIC (UDP 443) и звонки по UDP через этот сервер не пойдут — они блокируются, мимо VPN не уходят. Для звонков выберите сервер с UDP (Hysteria2, VLESS).";
+  if (tcpOnly) $("#routeNote").textContent = "Naive передаёт только TCP. UDP (QUIC, звонки) идёт через самый быстрый живой сервер с UDP (Hysteria2, VLESS…), а если такого нет — блокируется. Мимо VPN не уходит.";
   $("#routeLbl").textContent = s.mode ? "Трафик идёт через ("+((MODES.find(x=>x[0]===s.mode)||[,s.mode])[1]).toLowerCase()+")" : "Трафик идёт через";
 
   // список

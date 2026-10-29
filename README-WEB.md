@@ -69,8 +69,18 @@ vpn logs -f youtube
 
 Naive (и SOCKS5 без UDP) передаёт только TCP. Для UDP mihomo пропускает правило `IN-NAME,tun-in,SELECTOR`,
 и раньше такой трафик падал в `MATCH,GLOBAL` (= DIRECT) — QUIC и звонки к сайтам из списка шли через WAN мимо VPN.
-Шаблон закрывает это правилом `IN-NAME,tun-in,REJECT`: UDP через TCP-only сервер блокируется
-(браузер откатывается на TCP), но мимо VPN не уходит. Для звонков выбирайте сервер с UDP (Hysteria2, VLESS).
+Шаблон закрывает это так:
+
+```yaml
+  - IN-NAME,tun-in,SELECTOR                       # TCP и UDP, если выбранный сервер умеет UDP
+  - AND,((IN-NAME,tun-in),(NETWORK,udp)),UDP      # иначе UDP — через группу UDP
+  - IN-NAME,tun-in,REJECT                         # всё прочее из списка — блок, не DIRECT
+```
+
+Группа `UDP` — url-test: `REJECT` + все провайдеры без `Socks5|Http|Direct`. Выбирается самый быстрый
+живой сервер с UDP (Hysteria2, VLESS, …); если живых нет — первый в группе, `REJECT`.
+Итог: при naive TCP идёт через naive, QUIC и звонки — через, например, Hysteria2 из `SRV1`;
+нет ни одного UDP-сервера — UDP блокируется (браузер откатывается на TCP), но мимо VPN не уходит.
 
 Своя (не шаблонная) конфигурация (`CONFIG=...` без шаблона): провайдер WEB добавьте вручную:
 
