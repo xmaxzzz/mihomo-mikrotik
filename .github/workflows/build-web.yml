@@ -83,7 +83,7 @@ jobs:
           docker pull -q --platform linux/arm/v7 "$IMAGE:$SHORT_SHA"
           docker run --rm --platform linux/arm/v7 --entrypoint sh "$IMAGE:$SHORT_SHA" -c \
             'set -e; mihomo -v; mihomo-web version; if [ -x /usr/bin/naive ]; then naive --version; else echo "naive: absent"; fi; ls -la /usr/bin/mihomo /usr/bin/mihomo-web /usr/bin/naive 2>/dev/null; du -sxh / 2>/dev/null | tail -1'
-          SIZE=$(docker image inspect "$IMAGE:$SHORT_SHA" --format '{{.Size}}')
+          SIZE=$(docker save --platform linux/arm/v7 "$IMAGE:$SHORT_SHA" | wc -c)
           echo "armv7 image size: $((SIZE/1024/1024)) MB" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$SIZE" -gt $((60*1024*1024)) ]; then
             echo "::warning::armv7 образ больше 60 МБ — во внутреннюю NAND L009 может не влезть"
@@ -91,7 +91,7 @@ jobs:
 
       - name: Export armv7 tar (установка файлом)
         run: |
-          docker save "$IMAGE:$SHORT_SHA" -o mihomo-mikrotik-armv7.tar
+          docker save --platform linux/arm/v7 "$IMAGE:$SHORT_SHA" -o mihomo-mikrotik-armv7.tar
           ls -la mihomo-mikrotik-armv7.tar
 
       - uses: actions/upload-artifact@v4
