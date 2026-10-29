@@ -51,6 +51,18 @@ RUN sed -i \
     grep -Fq 'hello.SessionId[1] = 3' component/tls/reality.go && \
     grep -Fq 'hello.SessionId[2] = 27' component/tls/reality.go || \
     { echo "patch did not apply: reality minClientVer (component/tls/reality.go)" >&2; exit 1; }
+
+# sing-tun: в iptables-ветке auto-redirect (RouterOS без nf_tables) цикл exclude-uid передаёт
+# ranges.Range в форматтер -> panic "unknown value". Цепочка там висит на PREROUTING, где owner-match
+# всё равно не работает; uid исключается через auto-route (ip rule uidrange). Цикл вырезаем.
+RUN D="$(go mod download -json github.com/metacubex/sing-tun | jq -r '.Dir // empty')" && \
+    [ -n "$D" ] && rm -rf /src/.sing-tun && cp -r "$D" /src/.sing-tun && chmod -R u+w /src/.sing-tun && \
+    T="$(printf '\t')" && \
+    sed -i "/for _, uid := range r.tunOptions.ExcludeUID {/,/^${T}}\$/d" /src/.sing-tun/redirect_iptables.go && \
+    ! grep -q 'range r.tunOptions.ExcludeUID' /src/.sing-tun/redirect_iptables.go && \
+    grep -q 'tableNamePreRouteing, "-m addrtype --dst-type LOCAL -j RETURN")' /src/.sing-tun/redirect_iptables.go && \
+    go mod edit -replace github.com/metacubex/sing-tun=./.sing-tun || \
+    { echo "patch did not apply: sing-tun exclude-uid (redirect_iptables.go)" >&2; exit 1; }
   
 # Сборка mihomo для целевой архитектуры
 RUN echo "Building for $TARGETARCH $TARGETVARIANT" && \
