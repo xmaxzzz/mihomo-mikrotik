@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Серверы VPN</title>
+<style>
+:root{
+  --bg:#e8ecef; --panel:#ffffff; --ink:#15202b; --muted:#5b6875; --line:#d3dae0;
+  --accent:#0b7a75; --accent-ink:#ffffff; --ok:#1f8a4c; --warn:#b7791f; --bad:#c0392b;
+  --soft:#f3f6f8; --field:#ffffff;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#0f1519; --panel:#172129; --ink:#e3e9ee; --muted:#93a1ad; --line:#26333d;
+    --accent:#2bb3a8; --accent-ink:#06201e; --ok:#3ccf7a; --warn:#e3a640; --bad:#ff6b5e;
+    --soft:#1c2730; --field:#111a20;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans",sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:1040px;margin:0 auto;padding:20px 16px 64px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:22px;margin:0;font-weight:650;letter-spacing:-.01em}
+.sys{color:var(--muted);font-size:13px}
+.sys b{font-weight:600}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--muted);vertical-align:middle;margin-right:6px}
+.dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+
+.route{background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--accent);border-radius:10px;padding:16px 18px;display:grid;grid-template-columns:1fr auto;gap:6px 16px;align-items:center}
+.route .lbl{color:var(--muted);font-size:13px}
+.route .now{font-size:26px;font-weight:650;letter-spacing:-.015em;overflow-wrap:anywhere}
+.route .ping{font-size:26px;font-variant-numeric:tabular-nums;font-weight:600;text-align:right}
+.route .ping small{font-size:14px;color:var(--muted);font-weight:500}
+.modes{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.modes button{border:1px solid var(--line);background:var(--soft);color:var(--ink);padding:7px 12px;border-radius:7px;font:inherit;font-size:14px;cursor:pointer}
+.modes button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+
+section{margin-top:22px}
+.bar{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-bottom:10px}
+h2{font-size:17px;margin:0;font-weight:650}
+.btn{border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:7px 12px;border-radius:7px;font:inherit;font-size:14px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:var(--muted)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+.btn.danger{color:var(--bad)}
+.btn:disabled{opacity:.55;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.list{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.row{display:grid;grid-template-columns:22px minmax(0,1.6fr) 92px minmax(0,1.3fr) 78px auto;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--line)}
+.row:first-child{border-top:0}
+.row.off{opacity:.55}
+.row.active{background:color-mix(in srgb,var(--accent) 9%,var(--panel))}
+.name{font-weight:600;overflow-wrap:anywhere}
+.name .sub{display:block;font-weight:400;color:var(--muted);font-size:12.5px}
+.type{font-size:12px;font-weight:600;border:1px solid var(--line);border-radius:5px;padding:2px 6px;text-align:center;color:var(--muted)}
+.type.vless{color:#2a6fd6} .type.hysteria2{color:#a3489c} .type.mieru{color:#b06a00} .type.naive{color:#0b7a75}
+@media (prefers-color-scheme:dark){.type.vless{color:#7fb0ff}.type.hysteria2{color:#e39ad9}.type.mieru{color:#f0b35a}.type.naive{color:#4fd1c5}}
+.host{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
+.ms{font-variant-numeric:tabular-nums;text-align:right;font-weight:600}
+.ms.bad{color:var(--bad)} .ms.warn{color:var(--warn)} .ms.na{color:var(--muted);font-weight:400}
+.acts{display:flex;gap:6px;justify-content:flex-end;flex-wrap:wrap}
+.acts .btn{padding:5px 9px;font-size:13px}
+.empty{padding:28px 18px;color:var(--muted)}
+.empty b{color:var(--ink)}
+
+details.add{background:var(--panel);border:1px solid var(--line);border-radius:10px}
+details.add>summary{cursor:pointer;padding:12px 16px;font-weight:650;list-style:none}
+details.add>summary::-webkit-details-marker{display:none}
+details.add>summary::before{content:"+";display:inline-block;width:18px;color:var(--accent);font-weight:700}
+details.add[open]>summary::before{content:"–"}
+.addbody{padding:0 16px 16px}
+.tabs{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
+.tabs button{border:1px solid var(--line);background:var(--soft);color:var(--ink);padding:6px 11px;border-radius:7px;font:inherit;font-size:14px;cursor:pointer}
+.tabs button[aria-selected=true]{border-color:var(--accent);box-shadow:inset 0 -2px 0 var(--accent);font-weight:600}
+label{display:block;font-size:13px;color:var(--muted);margin-bottom:4px}
+input,select,textarea{width:100%;font:inherit;font-size:14px;color:var(--ink);background:var(--field);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+textarea{min-height:110px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13px;resize:vertical}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px 12px}
+.grid .wide{grid-column:1/-1}
+.check{display:flex;gap:8px;align-items:center;color:var(--ink);font-size:14px;margin-top:22px}
+.check input{width:auto}
+.hint{color:var(--muted);font-size:13px;margin:8px 0 0}
+.actions{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;align-items:center}
+.preview{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;color:var(--muted);overflow-wrap:anywhere;margin-top:10px}
+
+#toast{position:fixed;left:50%;bottom:18px;transform:translateX(-50%);max-width:min(560px,92vw);background:var(--ink);color:var(--bg);padding:10px 14px;border-radius:8px;font-size:14px;display:none;z-index:20;white-space:pre-line}
+#toast.err{background:var(--bad);color:#fff}
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--panel);color:var(--ink);padding:18px;width:min(640px,94vw)}
+dialog::backdrop{background:rgb(0 0 0/.45)}
+dialog h3{margin:0 0 12px;font-size:17px}
+pre.log{background:var(--field);border:1px solid var(--line);border-radius:7px;padding:10px;max-height:52vh;overflow:auto;font-size:12px;white-space:pre-wrap;margin:0}
+footer{margin-top:26px;color:var(--muted);font-size:13px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+
+@media (max-width:760px){
+  .row{grid-template-columns:22px minmax(0,1fr) auto;grid-template-areas:"d n m" "d t t" "a a a"}
+  .row>.st{grid-area:d} .row>.name{grid-area:n} .row>.ms{grid-area:m}
+  .row>.type{display:none} .row>.host{grid-area:t}
+  .row>.acts{grid-area:a;justify-content:flex-start}
+  .route .now,.route .ping{font-size:21px}
+}
+@media (prefers-reduced-motion:no-preference){.row{transition:background .2s}}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Серверы VPN</h1>
+    <div class="sys" id="sys">Подключение…</div>
+  </header>
+
+  <div class="route" aria-live="polite">
+    <div>
+      <div class="lbl" id="routeLbl">Трафик идёт через</div>
+      <div class="now" id="routeNow">—</div>
+    </div>
+    <div class="ping" id="routePing"></div>
+    <div class="modes" id="modes" role="group" aria-label="Режим выбора сервера"></div>
+  </div>
+
+  <section>
+    <details class="add" id="addBox">
+      <summary>Добавить сервер</summary>
+      <div class="addbody">
+        <div class="tabs" role="tablist" id="tabs"></div>
+        <div id="tabLinks">
+          <label for="links">Ссылки — по одной в строке: vless://, hy2://, hysteria2://, mierus://, naive+https://, naive+quic://</label>
+          <textarea id="links" spellcheck="false" placeholder="hy2://пароль@vpn.example.com:443?sni=vpn.example.com#Нидерланды"></textarea>
+          <div class="grid" style="margin-top:10px">
+            <div><label for="linkName">Имя (необязательно, для первой ссылки)</label><input id="linkName" maxlength="64"></div>
+          </div>
+          <div class="actions"><button class="btn primary" id="addLinks">Добавить</button></div>
+        </div>
+        <div id="tabForm" hidden>
+          <div class="grid" id="formFields"></div>
+          <div class="preview" id="formPreview"></div>
+          <div class="actions"><button class="btn primary" id="addForm">Добавить</button></div>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <section>
+    <div class="bar">
+      <h2 id="listTitle">Серверы</h2>
+      <div class="acts">
+        <button class="btn" id="testAll">Проверить все</button>
+      </div>
+    </div>
+    <div class="list" id="list"><div class="empty">Загрузка…</div></div>
+  </section>
+
+  <footer>
+    <button class="btn" id="exportBtn">Скачать бэкап</button>
+    <button class="btn" id="importBtn">Восстановить из бэкапа</button>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
+    <span id="ver"></span>
+  </footer>
+</main>
+
+<dialog id="editDlg">
+  <h3>Изменить сервер</h3>
+  <div class="grid">
+    <div class="wide"><label for="eName">Имя</label><input id="eName" maxlength="64"></div>
+    <div class="wide"><label for="eUri">Ссылка</label><textarea id="eUri" spellcheck="false"></textarea></div>
+  </div>
+  <div class="actions">
+    <button class="btn primary" id="eSave">Сохранить</button>
+    <button class="btn" id="eCancel">Отмена</button>
+    <button class="btn" id="eCopy">Копировать ссылку</button>
+  </div>
+</dialog>
+
+<dialog id="logDlg">
+  <h3 id="logTitle">Журнал naive</h3>
+  <pre class="log" id="logBody"></pre>
+  <div class="actions"><button class="btn" id="logRefresh">Обновить</button><button class="btn" id="logClose">Закрыть</button></div>
+</dialog>
+
+<div id="toast" role="status"></div>
+
+<script>
+"use strict";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const MODES = [["AUTO","Авто (самый быстрый)"],["FALLBACK","Резерв по порядку"],["MANUAL","Вручную"],["LOADBALANCE","Балансировка"],["DIRECT","Без VPN"]];
+const TYPE_LABEL = {vless:"VLESS",hysteria2:"HY2",mieru:"Mieru",naive:"Naive",vmess:"VMess",trojan:"Trojan",ss:"SS",tuic:"TUIC",anytls:"AnyTLS",hysteria:"HY1",socks5:"SOCKS5"};
+let state = null, busy = false, editId = null, logId = null;
+
+async function api(method, path, body){
+  const opt = {method, headers:{"X-Mihomo-Web":"1"}};
+  if (body !== undefined){ opt.headers["Content-Type"]="application/json"; opt.body=JSON.stringify(body); }
+  const r = await fetch(path, opt);
+  let data = null;
+  try { data = await r.json(); } catch { /* пусто */ }
+  if (!r.ok) throw new Error((data && (data.error || (data.errors||[]).join("\n"))) || ("HTTP "+r.status));
+  return data;
+}
+let toastT;
+function toast(msg, err){
+  const t=$("#toast"); t.textContent=msg; t.className=err?"err":""; t.style.display="block";
+  clearTimeout(toastT); toastT=setTimeout(()=>t.style.display="none", err?7000:3000);
+}
+function warnOf(d){ if (d && d.warning) toast("Сохранено, но mihomo не перечитал список:\n"+d.warning, true); }
+
+function msClass(d){ if (d<0) return "na"; if (d===0) return "bad"; if (d>400) return "warn"; return ""; }
+function msText(d){ if (d<0) return "—"; if (d===0) return "нет связи"; return d+" мс"; }
+
+async function load(){
+  try { state = await api("GET","/api/state"); render(); }
+  catch(e){ $("#sys").innerHTML='<span class="dot bad"></span>Панель недоступна: '+esc(e.message); }
+}
+
+function render(){
+  const s=state, m=s.mihomo||{};
+  $("#sys").innerHTML = m.ok
+    ? '<span class="dot ok"></span>mihomo <b>'+esc(m.version)+'</b> работает'
+    : '<span class="dot bad"></span>mihomo не отвечает: '+esc(m.error||"");
+  $("#ver").textContent = "Панель "+s.version+(s.naive_available?"":" · naive не установлен");
+
+  // режимы
+  $("#modes").innerHTML = MODES.map(([k,t])=>'<button data-mode="'+k+'" aria-pressed="'+(s.mode===k)+'">'+t+'</button>').join("");
+  // текущий маршрут
+  let now="—", ping="";
+  if (s.mode==="DIRECT"){ now="Напрямую, без VPN"; }
+  else {
+    const cur = s.servers.find(x=>x.active);
+    if (cur){ now=cur.name; ping = cur.delay>0 ? cur.delay+' <small>мс</small>' : (cur.delay===0?'<small>нет связи</small>':''); }
+    else if (s.mode==="MANUAL" && s.manual) now=s.manual;
+    else if (s.current) now=s.current;
+    else if (!s.servers.length) now="Серверов нет — трафик идёт напрямую";
+    if (now===s.placeholder) { now="Нет включённых серверов — трафик идёт напрямую"; ping=""; }
+  }
+  $("#routeNow").textContent=now; $("#routePing").innerHTML=ping;
+  $("#routeLbl").textContent = s.mode ? "Трафик идёт через ("+((MODES.find(x=>x[0]===s.mode)||[,s.mode])[1]).toLowerCase()+")" : "Трафик идёт через";
+
+  // список
+  const on = s.servers.filter(x=>x.enabled).length;
+  $("#listTitle").textContent = "Серверы" + (s.servers.length ? " — "+on+" из "+s.servers.length+" включено" : "");
+  if (!s.servers.length){
+    $("#list").innerHTML='<div class="empty"><b>Список пуст.</b> Откройте «Добавить сервер» и вставьте ссылку от провайдера или заполните форму.</div>';
+    return;
+  }
+  $("#list").innerHTML = s.servers.map((x,i)=>{
+    let st="dot", stTitle="выключен";
+    if (x.enabled){
+      if (!x.loaded){ st+=" bad"; stTitle="mihomo не принял ссылку — проверьте её"; }
+      else if (x.delay===0){ st+=" bad"; stTitle="нет связи"; }
+      else if (x.delay>0){ st+=" ok"; stTitle="работает"; }
+      else { st+=" warn"; stTitle="ещё не проверялся"; }
+    }
+    let sub = "";
+    if (x.type==="naive" && x.enabled){
+      const n=x.naive; sub = n ? ("naive: "+(n.state==="running"?"запущен":n.state)+(n.restarts?", перезапусков "+n.restarts:"")) : (state.naive_available?"naive: не запущен":"naive отсутствует в образе");
+    } else if (x.enabled && !x.loaded && state.mihomo.ok){ sub="ссылка не распознана mihomo"; }
+    if (x.active) sub = "используется сейчас" + (sub?"; "+sub:"");
+    return '<div class="row'+(x.enabled?"":" off")+(x.active?" active":"")+'" data-id="'+x.id+'">'+
+      '<span class="st"><span class="'+st+'" title="'+esc(stTitle)+'"></span></span>'+
+      '<div class="name">'+esc(x.name)+(sub?'<span class="sub">'+esc(sub)+'</span>':'')+'</div>'+
+      '<span class="type '+esc(x.type)+'">'+esc(TYPE_LABEL[x.type]||x.type)+'</span>'+
+      '<span class="host">'+esc(x.host)+(x.port?":"+esc(x.port):"")+'</span>'+
+      '<span class="ms '+msClass(x.delay)+'">'+msText(x.delay)+'</span>'+
+      '<div class="acts">'+
+        (x.enabled?'<button class="btn" data-act="use"'+(x.active&&state.mode==="MANUAL"?" disabled":"")+'>Использовать</button>':'')+
+        (x.enabled?'<button class="btn" data-act="test">Проверить</button>':'')+
+        '<button class="btn" data-act="edit">Изменить</button>'+
+        '<button class="btn" data-act="toggle">'+(x.enabled?"Выключить":"Включить")+'</button>'+
+        (x.type==="naive"?'<button class="btn" data-act="log">Журнал</button>':'')+
+        (i>0?'<button class="btn" data-act="up" title="Выше в списке (важно для режима «Резерв»)" aria-label="Выше">↑</button>':'')+
+        '<button class="btn danger" data-act="del">Удалить</button>'+
+      '</div></div>';
+  }).join("");
+}
+
+async function guard(btn, fn){
+  if (busy) return; busy=true; if (btn) btn.disabled=true;
+  try { await fn(); } catch(e){ toast(e.message, true); }
+  finally { busy=false; if (btn) btn.disabled=false; load(); }
+}
+
+$("#modes").addEventListener("click", e=>{
+  const b=e.target.closest("button[data-mode]"); if(!b) return;
+  guard(b, async()=>{ await api("POST","/api/mode",{mode:b.dataset.mode}); toast("Режим переключён"); });
+});
+
+$("#list").addEventListener("click", e=>{
+  const b=e.target.closest("button[data-act]"); if(!b) return;
+  const id=b.closest(".row").dataset.id, x=state.servers.find(s=>s.id===id); if(!x) return;
+  const act=b.dataset.act;
+  if (act==="use") return guard(b, async()=>{ await api("POST","/api/servers/"+id+"/use"); toast("Теперь трафик идёт через «"+x.name+"»"); });
+  if (act==="test") return guard(b, async()=>{ b.textContent="…"; const r=await api("POST","/api/servers/"+id+"/test"); toast(r.delay>0?"«"+x.name+"»: "+r.delay+" мс":"«"+x.name+"»: нет связи", !(r.delay>0)); });
+  if (act==="toggle") return guard(b, async()=>{ warnOf(await api("PUT","/api/servers/"+id,{enabled:!x.enabled})); });
+  if (act==="del"){ if(!confirm("Удалить «"+x.name+"»?")) return; return guard(b, async()=>{ warnOf(await api("DELETE","/api/servers/"+id)); toast("Удалён"); }); }
+  if (act==="up") return guard(b, async()=>{
+    const ids=state.servers.map(s=>s.id), i=ids.indexOf(id); [ids[i-1],ids[i]]=[ids[i],ids[i-1]];
+    warnOf(await api("POST","/api/reorder",{ids}));
+  });
+  if (act==="edit") return openEdit(x);
+  if (act==="log") return openLog(x);
+});
+
+async function openEdit(x){
+  try{
+    const full = await api("GET","/api/export?id="+encodeURIComponent(x.id));
+    editId=x.id; $("#eName").value=full.name; $("#eUri").value=full.uri; $("#editDlg").showModal();
+  }catch(e){ toast(e.message,true); }
+}
+$("#eCancel").onclick=()=>$("#editDlg").close();
+$("#eCopy").onclick=async()=>{ try{ await navigator.clipboard.writeText($("#eUri").value); toast("Ссылка скопирована"); }catch{ $("#eUri").select(); toast("Выделено — скопируйте вручную"); } };
+$("#eSave").onclick=()=>guard($("#eSave"), async()=>{
+  warnOf(await api("PUT","/api/servers/"+editId,{name:$("#eName").value, uri:$("#eUri").value.trim()}));
+  $("#editDlg").close(); toast("Сохранено");
+});
+
+async function openLog(x){ logId=x.id; $("#logTitle").textContent="Журнал naive: "+x.name; await refreshLog(); $("#logDlg").showModal(); }
+async function refreshLog(){ try{ const r=await api("GET","/api/servers/"+logId+"/log"); $("#logBody").textContent=(r.lines||[]).join("\n")||"Пусто — процесс не запускался."; }catch(e){ $("#logBody").textContent=e.message; } }
+$("#logRefresh").onclick=refreshLog; $("#logClose").onclick=()=>$("#logDlg").close();
+
+$("#testAll").onclick=()=>guard($("#testAll"), async()=>{ $("#testAll").textContent="Проверяю…"; try{ await api("POST","/api/test-all"); } finally { $("#testAll").textContent="Проверить все"; } });
+
+$("#addLinks").onclick=()=>guard($("#addLinks"), async()=>{
+  const r=await api("POST","/api/servers",{text:$("#links").value, name:$("#linkName").value.trim()});
+  toast("Добавлено: "+r.added+(r.errors&&r.errors.length?"\nОшибки:\n"+r.errors.join("\n"):""), r.errors&&r.errors.length>0);
+  warnOf(r);
+  if (!r.errors || !r.errors.length){ $("#links").value=""; $("#linkName").value=""; }
+});
+
+// ---------- форма ----------
+const FORMS = {
+  hysteria2:{title:"Hysteria2", fields:[
+    ["name","Имя","",""],["host","Адрес сервера","vpn.example.com",""],["port","Порт","443","443"],
+    ["password","Пароль",""," "],["sni","SNI (пусто = адрес)","",""],
+    ["hop","Прыжки по портам","20000-30000",""],["obfs","Обфускация","",["","salamander"]],["obfsPass","Пароль обфускации","",""],
+    ["up","Up, Мбит/с","",""],["down","Down, Мбит/с","",""],["insecure","Не проверять сертификат","",false]]},
+  vless:{title:"VLESS", fields:[
+    ["name","Имя","",""],["host","Адрес сервера","vpn.example.com",""],["port","Порт","443","443"],
+    ["uuid","UUID","",""],["security","Защита","",["reality","tls","none"]],["sni","SNI","www.microsoft.com",""],
+    ["fp","Fingerprint","",["chrome","firefox","safari","edge","random"]],["pbk","Public key (Reality)","",""],["sid","Short ID (Reality)","",""],
+    ["flow","Flow","",["xtls-rprx-vision",""]],["net","Транспорт","",["tcp","xhttp","ws","grpc","httpupgrade"]],
+    ["path","Path (ws/xhttp)","/",""],["hostHdr","Host (ws/xhttp)","",""],["svc","serviceName (grpc)","",""],["mode","Режим xhttp","",["","auto","packet-up","stream-up","stream-one"]]]},
+  mieru:{title:"Mieru", fields:[
+    ["name","Имя","",""],["host","Адрес сервера","vpn.example.com",""],["port","Порт или диапазон","2012 или 2012-2022",""],
+    ["proto","Протокол","",["TCP","UDP"]],["user","Логин","",""],["password","Пароль","",""],
+    ["mux","Мультиплексирование","",["MULTIPLEXING_LOW","MULTIPLEXING_OFF","MULTIPLEXING_MIDDLE","MULTIPLEXING_HIGH","MULTIPLEXING_DEFAULT"]],
+    ["hs","Рукопожатие","",["HANDSHAKE_NO_WAIT","HANDSHAKE_STANDARD","HANDSHAKE_DEFAULT"]]]},
+  naive:{title:"Naive", fields:[
+    ["name","Имя","",""],["proto","Протокол","",["https","quic"]],["host","Адрес сервера","naive.example.com",""],["port","Порт","443","443"],
+    ["user","Логин","",""],["password","Пароль","",""],["conc","Параллельных туннелей","1",["","1","2","3","4"]]]},
+};
+let formType="hysteria2";
+function renderTabs(){
+  const tabs=[["links","Ссылки"],...Object.entries(FORMS).map(([k,v])=>[k,v.title])];
+  const cur=$("#tabForm").hidden?"links":formType;
+  $("#tabs").innerHTML=tabs.map(([k,t])=>'<button role="tab" data-tab="'+k+'" aria-selected="'+(k===cur)+'">'+t+'</button>').join("");
+}
+$("#tabs").addEventListener("click",e=>{
+  const b=e.target.closest("button[data-tab]"); if(!b) return;
+  const t=b.dataset.tab;
+  if (t==="links"){ $("#tabLinks").hidden=false; $("#tabForm").hidden=true; }
+  else { formType=t; $("#tabLinks").hidden=true; $("#tabForm").hidden=false; renderForm(); }
+  renderTabs();
+});
+function renderForm(){
+  $("#formFields").innerHTML = FORMS[formType].fields.map(([k,l,ph,def])=>{
+    const id="f_"+k;
+    if (Array.isArray(def)) return '<div><label for="'+id+'">'+l+'</label><select id="'+id+'" data-k="'+k+'">'+def.map(o=>'<option value="'+o+'">'+(o||"—")+'</option>').join("")+'</select></div>';
+    if (def===false) return '<div><label class="check"><input type="checkbox" id="'+id+'" data-k="'+k+'"> '+l+'</label></div>';
+    return '<div><label for="'+id+'">'+l+'</label><input id="'+id+'" data-k="'+k+'" placeholder="'+esc(ph)+'" value="'+esc(def.trim())+'" autocomplete="off" spellcheck="false"></div>';
+  }).join("");
+  updatePreview();
+}
+$("#formFields").addEventListener("input", updatePreview);
+function fv(){ const o={}; document.querySelectorAll("#formFields [data-k]").forEach(el=>o[el.dataset.k]= el.type==="checkbox"?el.checked:el.value.trim()); return o; }
+const enc=encodeURIComponent;
+function hostPart(h){ return h.includes(":")&&!h.startsWith("[")?"["+h+"]":h; }
+function buildURI(){
+  const v=fv(), need=(k,t)=>{ if(!v[k]) throw new Error("Заполните поле «"+t+"»"); };
+  need("host","Адрес сервера");
+  const q=new URLSearchParams(), name=v.name?"#"+enc(v.name):"";
+  if (formType==="hysteria2"){
+    need("password","Пароль");
+    if(v.sni)q.set("sni",v.sni); if(v.obfs){q.set("obfs",v.obfs); if(v.obfsPass)q.set("obfs-password",v.obfsPass);}
+    if(v.insecure)q.set("insecure","1"); if(v.up)q.set("up",v.up); if(v.down)q.set("down",v.down);
+    const port=(v.port||"443")+(v.hop?","+v.hop:"");
+    return "hy2://"+enc(v.password)+"@"+hostPart(v.host)+":"+port+"/"+(q.toString()?"?"+q:"")+name;
+  }
+  if (formType==="vless"){
+    need("uuid","UUID");
+    q.set("encryption","none"); q.set("security",v.security); q.set("type",v.net);
+    if(v.sni)q.set("sni",v.sni); if(v.security!=="none")q.set("fp",v.fp);
+    if(v.security==="reality"){ need("pbk","Public key (Reality)"); q.set("pbk",v.pbk); if(v.sid)q.set("sid",v.sid); }
+    if(v.flow && v.net==="tcp") q.set("flow",v.flow);
+    if(["ws","xhttp","httpupgrade"].includes(v.net)){ if(v.path)q.set("path",v.path); if(v.hostHdr)q.set("host",v.hostHdr); }
+    if(v.net==="xhttp"&&v.mode)q.set("mode",v.mode);
+    if(v.net==="grpc"&&v.svc)q.set("serviceName",v.svc);
+    return "vless://"+enc(v.uuid)+"@"+hostPart(v.host)+":"+(v.port||"443")+"?"+q+name;
+  }
+  if (formType==="mieru"){
+    need("port","Порт или диапазон"); need("user","Логин"); need("password","Пароль");
+    q.set("handshake-mode",v.hs); q.set("multiplexing",v.mux); q.set("port",v.port); q.set("profile","default"); q.set("protocol",v.proto);
+    return "mierus://"+enc(v.user)+":"+enc(v.password)+"@"+hostPart(v.host)+"?"+q+name;
+  }
+  if (formType==="naive"){
+    need("user","Логин"); need("password","Пароль");
+    if(v.conc)q.set("insecure-concurrency",v.conc);
+    return "naive+"+v.proto+"://"+enc(v.user)+":"+enc(v.password)+"@"+hostPart(v.host)+":"+(v.port||"443")+(q.toString()?"?"+q:"")+name;
+  }
+}
+function updatePreview(){ try{ $("#formPreview").textContent=buildURI(); }catch(e){ $("#formPreview").textContent=e.message; } }
+$("#addForm").onclick=()=>guard($("#addForm"), async()=>{
+  const uri=buildURI(); const v=fv();
+  const r=await api("POST","/api/servers",{text:uri, name:v.name||""});
+  toast("Добавлено: "+r.added); warnOf(r); renderForm();
+});
+
+// ---------- бэкап ----------
+$("#exportBtn").onclick=async()=>{
+  try{
+    const r=await fetch("/api/export"); if(!r.ok) throw new Error("HTTP "+r.status);
+    const blob=await r.blob(), a=document.createElement("a");
+    a.href=URL.createObjectURL(blob); a.download="mihomo-servers-"+new Date().toISOString().slice(0,10)+".json"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(a.href),2000);
+  }catch(e){ toast(e.message,true); }
+};
+$("#importBtn").onclick=()=>$("#importFile").click();
+$("#importFile").onchange=async e=>{
+  const f=e.target.files[0]; e.target.value=""; if(!f) return;
+  if(!confirm("Заменить текущий список серверов содержимым файла «"+f.name+"»?")) return;
+  guard(null, async()=>{
+    const data=JSON.parse(await f.text());
+    const r=await api("POST","/api/import",{servers:data.servers||data});
+    toast("Восстановлено: "+r.imported+(r.errors&&r.errors.length?"\nПропущено:\n"+r.errors.join("\n"):""), r.errors&&r.errors.length>0); warnOf(r);
+  });
+};
+
+renderTabs(); load(); setInterval(()=>{ if(!busy && !document.hidden && !$("#editDlg").open) load(); }, 10000);
+</script>
+</body>
+</html>

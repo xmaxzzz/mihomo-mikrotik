@@ -510,6 +510,17 @@ add_provider() {
 }
 
 
+### WEB — серверы, добавленные через веб-панель mihomo-web
+WEB_DIR="$WORKDIR/web"
+if [ "${WEB_ENABLE:-true}" = "true" ] && command -v mihomo-web >/dev/null 2>&1; then
+    mkdir -p "$WEB_DIR"
+    # servers.json -> servers.txt (base64 uri-list для file-провайдера), до старта mihomo
+    if ! WEB_DATA_DIR="$WEB_DIR" mihomo-web render; then
+        echo "WARN: mihomo-web render failed, WEB provider may be empty"
+    fi
+    add_provider "WEB" "file" "$WEB_DIR/servers.txt"
+fi
+
 ### SRV
 srv_file="$WORKDIR/srv.yaml"
 srv_file_has_content=0
@@ -718,7 +729,12 @@ if grep -Eq '^[[:space:]]*\$TUN_IN_AUTOCONFIG' "$CONFIG_FILE"; then
     - any:53
     disable-icmp-forwarding: $TUN_DISABLE_ICMP_FORWARDING
 EOF
-)  
+)
+  if [ "${WEB_ENABLE:-true}" = "true" ] && [ -x /usr/bin/naive ] && [ "${NAIVE_UID:-0}" -gt 0 ]; then
+    TUN_IN_AUTOCONFIG="${TUN_IN_AUTOCONFIG}
+    exclude-uid:
+    - ${NAIVE_UID}"
+  fi
 else
   nft_rules
   TUN_IN_AUTOCONFIG=$(cat <<EOF
@@ -749,6 +765,20 @@ export HWID
 # если это шаблон, заполняем переменными конфиг файл
 if [ "${ENVSUBST:-1}" -eq 1 ]; then
   envsubst < "$TEMPLATE_FILE" > "$WORKDIR/$CONFIG"
+fi
+
+# веб-панель управления серверами (+ супервизор naive), перезапускается при падении
+if [ "${WEB_ENABLE:-true}" = "true" ] && command -v mihomo-web >/dev/null 2>&1; then
+  (
+    trap 'kill $(jobs -p) 2>/dev/null; exit 0' TERM INT
+    while :; do
+      WEB_DATA_DIR="$WEB_DIR" mihomo-web serve &
+      wait $!
+      echo "mihomo-web exited with code $?, restart in 3s"
+      sleep 3
+    done
+  ) &
+  echo "mihomo-web: http://<container-ip>:${WEB_PORT:-8080}/ (user: ${WEB_USER:-admin})"
 fi
 
 CMD_MIHOMO="${@:-"-d $WORKDIR -f $WORKDIR/$CONFIG"}"
