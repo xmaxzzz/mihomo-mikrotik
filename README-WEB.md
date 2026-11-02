@@ -66,8 +66,9 @@ vpn logs -f youtube
 ```
 
 Терминал RouterOS (WinBox, SSH на роутер) выбрасывает всё, что не ASCII, поэтому по умолчанию консоль
-печатает транслитом (`Trafik cherez: DE`, значки `* -> v ^`). В нормальном терминале (SSH из Windows Terminal,
-`docker exec`) — `vpn --utf8` или `VPN_UTF8=1`; при `LANG=*.UTF-8` кириллица включается сама.
+на английском (`Traffic via: DE`, значки `* -> down up`); русские имена серверов — транслитом.
+В нормальном терминале (SSH из Windows Terminal, `docker exec`) — `vpn --ru` (`--utf8`) или `VPN_UTF8=1`;
+при `LANG=*.UTF-8` русский включается сам. `vpn --en` — английский принудительно.
 
 ## Утечки UDP мимо VPN
 

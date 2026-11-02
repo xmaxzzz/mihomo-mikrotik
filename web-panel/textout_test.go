@@ -54,4 +54,15 @@ func TestPadASCIIWidth(t *testing.T) {
 	if got := padL("39 мс", 7); got != "  39 ms" {
 		t.Fatalf("padL: %q", got)
 	}
+	// английский интерфейс в ASCII-режиме
+	if delayText(39) != "39 ms" || delayText(0) != "no link" || modeName("DIRECT") != "no VPN" {
+		t.Fatalf("en: %q %q %q", delayText(39), delayText(0), modeName("DIRECT"))
+	}
+	if got := eventText(Event{Msg: "нет связи с DE", MsgEN: "DE is DOWN"}); got != "DE is DOWN" {
+		t.Fatalf("event en: %q", got)
+	}
+	asciiOut = false
+	if delayText(39) != "39 мс" || eventText(Event{Msg: "нет связи с DE", MsgEN: "DE is DOWN"}) != "нет связи с DE" {
+		t.Fatal("ru")
+	}
 }

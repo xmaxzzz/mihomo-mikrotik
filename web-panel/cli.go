@@ -4,6 +4,7 @@ package main
 // status / list / use / mode / test / conns / logs / add.
 // Ходит в работающую панель через unix-сокет (WEB_SOCKET), пароль не нужен.
 // Запуск на RouterOS: /container/shell <контейнер>, затем `vpn`.
+// Язык: в терминале RouterOS (только ASCII) — английский, с --utf8 — русский.
 
 import (
 	"bufio"
@@ -29,6 +30,14 @@ var cliCommands = map[string]bool{"menu": true, "tui": true, "status": true, "li
 
 func isCLI(cmd string) bool { return cliCommands[cmd] }
 
+// L — строка интерфейса: английская в ASCII-режиме (терминал RouterOS), иначе русская.
+func L(ru, en string) string {
+	if asciiOut {
+		return en
+	}
+	return ru
+}
+
 type cli struct {
 	hc    *http.Client
 	base  string
@@ -44,9 +53,9 @@ func runCLI(cfg Config, cmd string, args []string) int {
 	rest := args[:0:0]
 	for _, a := range args {
 		switch a {
-		case "--utf8", "-u", "--utf-8":
+		case "--utf8", "-u", "--utf-8", "--ru":
 			forceUTF8 = true
-		case "--ascii", "-a":
+		case "--ascii", "-a", "--en":
 			forceASCII = true
 		default:
 			rest = append(rest, a)
@@ -65,13 +74,13 @@ func runCLI(cfg Config, cmd string, args []string) int {
 		err = c.cmdList()
 	case "use":
 		if len(args) == 0 {
-			err = errors.New("укажите номер или имя сервера: use 2")
+			err = errors.New(L("укажите номер или имя сервера: use 2", "give a server number or name: use 2"))
 			break
 		}
 		err = c.cmdUse(strings.Join(args, " "))
 	case "mode":
 		if len(args) == 0 {
-			err = errors.New("укажите режим: mode auto|fallback|manual|balance|direct")
+			err = errors.New(L("укажите режим: mode auto|fallback|manual|balance|direct", "give a mode: mode auto|fallback|manual|balance|direct"))
 			break
 		}
 		err = c.cmdMode(args[0])
@@ -92,7 +101,7 @@ func runCLI(cfg Config, cmd string, args []string) int {
 		c.help()
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, c.red("ошибка: ")+err.Error())
+		fmt.Fprintln(os.Stderr, c.red(L("ошибка: ", "error: "))+err.Error())
 		return 1
 	}
 	return 0
@@ -162,7 +171,8 @@ func (c *cli) call(method, path string, body, out any) error {
 	}
 	resp, err := c.hc.Do(req)
 	if err != nil {
-		return fmt.Errorf("панель не отвечает (контейнер запущен? WEB_ENABLE=true?): %w", err)
+		return fmt.Errorf("%s: %w", L("панель не отвечает (контейнер запущен? WEB_ENABLE=true?)",
+			"panel is not responding (container running? WEB_ENABLE=true?)"), err)
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
@@ -213,14 +223,12 @@ func (c *cli) paint(code, s string) string {
 	}
 	return "\x1b[" + code + "m" + s + "\x1b[0m"
 }
-func (c *cli) bold(s string) string  { return c.paint("1", s) }
-func (c *cli) dim(s string) string   { return c.paint("2", s) }
-func (c *cli) red(s string) string   { return c.paint("31", s) }
-func (c *cli) green(s string) string { return c.paint("32", s) }
-func (c *cli) yellow(s string) string {
-	return c.paint("33", s)
-}
-func (c *cli) cyan(s string) string { return c.paint("36", s) }
+func (c *cli) bold(s string) string   { return c.paint("1", s) }
+func (c *cli) dim(s string) string    { return c.paint("2", s) }
+func (c *cli) red(s string) string    { return c.paint("31", s) }
+func (c *cli) green(s string) string  { return c.paint("32", s) }
+func (c *cli) yellow(s string) string { return c.paint("33", s) }
+func (c *cli) cyan(s string) string   { return c.paint("36", s) }
 
 func (c *cli) clear() {
 	if c.color {
@@ -230,19 +238,19 @@ func (c *cli) clear() {
 	}
 }
 
+// значки: в ASCII-режиме — ASCII-замены
+func sym(u, a string) string { return L(u, a) }
+
 // pad/cut по числу символов, а не байт (кириллица).
 func pad(s string, w int) string {
 	if asciiOut {
-		s = translit(s) // ширина — после транслита, иначе колонки поедут
+		s = translit(s) // имена серверов по-русски — транслит; ширина после него
 	}
 	n := utf8.RuneCountInString(s)
 	if n > w {
 		r := []rune(s)
 		if w > 1 {
-			if asciiOut {
-				return string(r[:w-1]) + "~"
-			}
-			return string(r[:w-1]) + "…"
+			return string(r[:w-1]) + sym("…", "~")
 		}
 		return string(r[:w])
 	}
@@ -260,7 +268,31 @@ func padL(s string, w int) string {
 	return strings.Repeat(" ", w-n) + s
 }
 
-var modeRU = map[string]string{"AUTO": "авто", "FALLBACK": "резерв", "MANUAL": "вручную", "LOADBALANCE": "балансировка", "DIRECT": "без VPN"}
+func modeName(m string) string {
+	switch m {
+	case "AUTO":
+		return L("авто", "auto")
+	case "FALLBACK":
+		return L("резерв", "fallback")
+	case "MANUAL":
+		return L("вручную", "manual")
+	case "LOADBALANCE":
+		return L("балансировка", "load balance")
+	case "DIRECT":
+		return L("без VPN", "no VPN")
+	}
+	return m
+}
+
+func modeLong(m string) string {
+	switch m {
+	case "AUTO":
+		return L("авто (самый быстрый)", "auto (fastest)")
+	case "FALLBACK":
+		return L("резерв по порядку", "fallback in list order")
+	}
+	return modeName(m)
+}
 
 func modeArg(s string) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
@@ -281,11 +313,11 @@ func modeArg(s string) (string, bool) {
 func delayText(d int) string {
 	switch {
 	case d < 0:
-		return "—"
+		return sym("—", "-")
 	case d == 0:
-		return "нет связи"
+		return L("нет связи", "no link")
 	}
-	return strconv.Itoa(d) + " мс"
+	return strconv.Itoa(d) + L(" мс", " ms")
 }
 
 func (c *cli) delayColored(d int) string {
@@ -301,37 +333,46 @@ func (c *cli) delayColored(d int) string {
 	return c.dim(t)
 }
 
-func rateRU(bps int64) string {
+func rateHuman(bps int64) string {
 	bits := float64(bps) * 8
 	switch {
 	case bits >= 1e6:
-		return fmt.Sprintf("%.1f Мбит/с", bits/1e6)
+		return fmt.Sprintf("%.1f %s", bits/1e6, L("Мбит/с", "Mbit/s"))
 	case bits >= 1e3:
-		return fmt.Sprintf("%.0f кбит/с", bits/1e3)
+		return fmt.Sprintf("%.0f %s", bits/1e3, L("кбит/с", "kbit/s"))
 	}
-	return fmt.Sprintf("%.0f бит/с", bits)
+	return fmt.Sprintf("%.0f %s", bits, L("бит/с", "bit/s"))
 }
 
-func bytesRU(b int64) string {
+func bytesHuman(b int64) string {
 	f := float64(b)
 	switch {
 	case f >= 1<<30:
-		return fmt.Sprintf("%.2f ГБ", f/(1<<30))
+		return fmt.Sprintf("%.2f %s", f/(1<<30), L("ГБ", "GB"))
 	case f >= 1<<20:
-		return fmt.Sprintf("%.1f МБ", f/(1<<20))
+		return fmt.Sprintf("%.1f %s", f/(1<<20), L("МБ", "MB"))
 	case f >= 1<<10:
-		return fmt.Sprintf("%.0f КБ", f/(1<<10))
+		return fmt.Sprintf("%.0f %s", f/(1<<10), L("КБ", "KB"))
 	}
-	return fmt.Sprintf("%d Б", b)
+	return fmt.Sprintf("%d %s", b, L("Б", "B"))
+}
+
+// eventText — событие монитора на языке консоли.
+func eventText(e Event) string {
+	if asciiOut && e.MsgEN != "" {
+		return e.MsgEN
+	}
+	return e.Msg
 }
 
 // ---------- экраны ----------
 
 func (c *cli) printHeader(s *cliState, a *Activity) {
+	dot := sym(" · ", " | ")
 	if s.Mihomo.OK {
-		fmt.Printf("%s  mihomo %s %s · панель %s\n", c.bold("VPN"), s.Mihomo.Version, c.green("работает"), s.Version)
+		fmt.Printf("%s  mihomo %s %s%s%s %s\n", c.bold("VPN"), s.Mihomo.Version, c.green(L("работает", "running")), dot, L("панель", "panel"), s.Version)
 	} else {
-		fmt.Printf("%s  mihomo %s: %s\n", c.bold("VPN"), c.red("не отвечает"), s.Mihomo.Error)
+		fmt.Printf("%s  mihomo %s: %s\n", c.bold("VPN"), c.red(L("не отвечает", "not responding")), s.Mihomo.Error)
 	}
 	via, delay := "", -1
 	if a != nil && a.Via != "" {
@@ -343,37 +384,45 @@ func (c *cli) printHeader(s *cliState, a *Activity) {
 		via = firstNonEmpty(s.Current, s.Manual)
 	}
 	if via == s.Placeholder {
-		via = "нет включённых серверов — напрямую"
+		via = L("нет включённых серверов — напрямую", "no enabled servers - direct")
 	}
 	if s.Mode == "DIRECT" {
-		via = "напрямую, без VPN"
+		via = L("напрямую, без VPN", "direct, no VPN")
 	}
-	fmt.Printf("Трафик через: %s  %s  %s\n", c.bold(firstNonEmpty(via, "—")), c.delayColored(delay), c.dim("режим: "+firstNonEmpty(modeRU[s.Mode], s.Mode)))
+	if asciiOut {
+		via = translit(enName(via))
+	}
+	fmt.Printf("%s %s  %s  %s\n", L("Трафик через:", "Traffic via:"), c.bold(firstNonEmpty(via, sym("—", "-"))), c.delayColored(delay),
+		c.dim(L("режим: ", "mode: ")+modeName(s.Mode)))
 	if a != nil && a.OK {
-		fmt.Printf("Сейчас: ↓ %s  ↑ %s  соединений %d  · всего ↓ %s ↑ %s\n",
-			c.cyan(rateRU(a.DownRate)), c.cyan(rateRU(a.UpRate)), a.Conns, bytesRU(a.DnTotal), bytesRU(a.UpTotal))
+		fmt.Printf("%s %s %s  %s %s  %s %d%s%s %s %s %s %s\n",
+			L("Сейчас:", "Now:"), sym("↓", "down"), c.cyan(rateHuman(a.DownRate)), sym("↑", "up"), c.cyan(rateHuman(a.UpRate)),
+			L("соединений", "connections"), a.Conns, dot, L("всего", "total"),
+			sym("↓", "down"), bytesHuman(a.DnTotal), sym("↑", "up"), bytesHuman(a.UpTotal))
 	}
 }
 
 func (c *cli) printServers(s *cliState) {
 	if len(s.Servers) == 0 {
-		fmt.Println(c.dim("  Серверов в панели нет (серверы из env SRV/SUB здесь не показываются)."))
+		fmt.Println(c.dim(L("  Серверов в панели нет (серверы из env SRV/SUB здесь не показываются).",
+			"  No servers in the panel (servers from env SRV/SUB are not listed here).")))
 		return
 	}
-	fmt.Println(c.dim(" #  " + pad("", 2) + pad("Имя", 20) + " " + pad("Тип", 7) + " " + pad("Адрес", 30) + " " + padL("Пинг", 10)))
+	fmt.Println(c.dim(" #  " + pad("", 2) + pad(L("Имя", "Name"), 20) + " " + pad(L("Тип", "Type"), 7) + " " +
+		pad(L("Адрес", "Address"), 30) + " " + padL(L("Пинг", "Ping"), 10)))
 	for i, x := range s.Servers {
-		mark := c.dim("○")
+		var mark string
 		switch {
 		case !x.Enabled:
-			mark = c.dim("·")
+			mark = c.dim(sym("·", "-"))
 		case !x.Loaded:
-			mark = c.red("✕")
+			mark = c.red(sym("✕", "x"))
 		case x.Delay == 0:
-			mark = c.red("●")
+			mark = c.red(sym("●", "*"))
 		case x.Delay > 0:
-			mark = c.green("●")
+			mark = c.green(sym("●", "*"))
 		default:
-			mark = c.yellow("●")
+			mark = c.yellow(sym("●", "?"))
 		}
 		name := pad(x.Name, 20)
 		if x.Active {
@@ -392,17 +441,17 @@ func (c *cli) printServers(s *cliState) {
 				ping = c.green(ping)
 			}
 		} else {
-			ping = c.dim(padL("выкл", 10))
+			ping = c.dim(padL(L("выкл", "off"), 10))
 		}
 		note := ""
 		if x.Active {
-			note = c.cyan(" ← сейчас")
+			note = c.cyan(" " + sym("←", "<-") + " " + L("сейчас", "active"))
 		}
 		if x.Type == "naive" && x.Naive != nil && x.Naive.State != "running" && x.Enabled {
 			note += c.yellow(" naive: " + x.Naive.State)
 		}
 		if x.Enabled && !x.Loaded && s.Mihomo.OK {
-			note += c.red(" ссылка не принята")
+			note += c.red(L(" ссылка не принята", " link rejected by mihomo"))
 		}
 		fmt.Printf("%2d  %s %s %s %s %s%s\n", i+1, mark, name, pad(firstNonEmpty(typeShort[x.Type], x.Type), 7), pad(addr, 30), ping, note)
 	}
@@ -413,7 +462,7 @@ var typeShort = map[string]string{"vless": "VLESS", "hysteria2": "HY2", "mieru":
 
 func (c *cli) printRecent(a *Activity, n int) {
 	if len(a.Recent) == 0 {
-		fmt.Println(c.dim("  новых соединений пока нет"))
+		fmt.Println(c.dim(L("  новых соединений пока нет", "  no new connections yet")))
 		return
 	}
 	for i, r := range a.Recent {
@@ -424,15 +473,31 @@ func (c *cli) printRecent(a *Activity, n int) {
 	}
 }
 
+func (c *cli) printEvents(a *Activity, n int) {
+	if len(a.Events) == 0 {
+		return
+	}
+	fmt.Println(c.dim(L("События:", "Events:")))
+	for i, e := range a.Events {
+		if i >= n {
+			break
+		}
+		fmt.Printf("  %s %s\n", c.dim(e.T.Local().Format("15:04:05")), eventText(e))
+	}
+}
+
 func (c *cli) connLine(r ConnView) string {
 	dst := firstNonEmpty(r.Host, r.DstIP)
 	if r.Port != "" {
 		dst += ":" + r.Port
 	}
 	via := r.Via
+	if asciiOut {
+		via = translit(enName(via))
+	}
 	switch {
 	case r.Internal:
-		via = c.dim("служебное")
+		via = c.dim(L("служебное", "internal"))
 	case r.Rejected:
 		via = c.red(via)
 	case r.Direct:
@@ -440,7 +505,8 @@ func (c *cli) connLine(r ConnView) string {
 	default:
 		via = c.green(via)
 	}
-	return fmt.Sprintf("%s %-3s %-15s → %s %s %s", c.dim(r.Start.Local().Format("15:04:05")), r.Net, r.Src, pad(dst, 40), c.dim("через"), via)
+	return fmt.Sprintf("%s %-3s %-15s %s %s %s %s", c.dim(r.Start.Local().Format("15:04:05")), r.Net, r.Src, sym("→", "->"),
+		pad(dst, 40), c.dim(L("через", "via")), via)
 }
 
 func (c *cli) cmdStatus() error {
@@ -450,17 +516,9 @@ func (c *cli) cmdStatus() error {
 	}
 	a, _ := c.activity(10)
 	c.printHeader(s, a)
-	if a != nil && len(a.Events) > 0 {
-		fmt.Println(c.dim("События:"))
-		for i, e := range a.Events {
-			if i >= 5 {
-				break
-			}
-			fmt.Printf("  %s %s\n", c.dim(e.T.Local().Format("15:04:05")), e.Msg)
-		}
-	}
 	if a != nil {
-		fmt.Println(c.dim("Последние запросы:"))
+		c.printEvents(a, 5)
+		fmt.Println(c.dim(L("Последние запросы:", "Recent requests:")))
 		c.printRecent(a, 10)
 	}
 	return nil
@@ -484,16 +542,24 @@ func (c *cli) pick(arg string) (*serverView, error) {
 	arg = strings.TrimSpace(arg)
 	if n, err := strconv.Atoi(arg); err == nil {
 		if n < 1 || n > len(s.Servers) {
-			return nil, fmt.Errorf("нет сервера №%d", n)
+			return nil, fmt.Errorf(L("нет сервера №%d", "no server #%d"), n)
 		}
 		return &s.Servers[n-1], nil
 	}
 	for i := range s.Servers {
-		if strings.EqualFold(s.Servers[i].Name, arg) {
+		if strings.EqualFold(s.Servers[i].Name, arg) || (asciiOut && strings.EqualFold(translit(s.Servers[i].Name), arg)) {
 			return &s.Servers[i], nil
 		}
 	}
-	return nil, fmt.Errorf("сервер «%s» не найден", arg)
+	return nil, fmt.Errorf(L("сервер «%s» не найден", "server %q not found"), arg)
+}
+
+// shown — имя сервера для вывода в тексте (в ASCII-режиме транслитом).
+func shown(name string) string {
+	if asciiOut {
+		return "\"" + translit(name) + "\""
+	}
+	return "«" + name + "»"
 }
 
 func (c *cli) cmdUse(arg string) error {
@@ -507,25 +573,26 @@ func (c *cli) cmdUse(arg string) error {
 	if err := c.call(http.MethodPost, "/api/servers/"+x.ID+"/use", nil, &r); err != nil {
 		return err
 	}
-	fmt.Println(c.green("✓ ") + "трафик идёт через «" + firstNonEmpty(r.Proxy, x.Name) + "» (режим «вручную»)")
+	fmt.Println(c.green(sym("✓ ", "+ ")) + L("трафик идёт через ", "traffic now goes via ") + shown(firstNonEmpty(r.Proxy, x.Name)) +
+		L(" (режим «вручную»)", " (mode: manual)"))
 	return nil
 }
 
 func (c *cli) cmdMode(arg string) error {
 	m, ok := modeArg(arg)
 	if !ok {
-		return fmt.Errorf("неизвестный режим «%s»", arg)
+		return fmt.Errorf(L("неизвестный режим «%s»", "unknown mode %q"), arg)
 	}
 	if err := c.call(http.MethodPost, "/api/mode", map[string]string{"mode": m}, nil); err != nil {
 		return err
 	}
-	fmt.Println(c.green("✓ ") + "режим: " + modeRU[m])
+	fmt.Println(c.green(sym("✓ ", "+ ")) + L("режим: ", "mode: ") + modeName(m))
 	return nil
 }
 
 func (c *cli) cmdTest(arg string) error {
 	if strings.TrimSpace(arg) == "" {
-		fmt.Println("Проверяю все серверы…")
+		fmt.Println(L("Проверяю все серверы…", "Testing all servers..."))
 		if err := c.call(http.MethodPost, "/api/test-all", nil, nil); err != nil {
 			return err
 		}
@@ -538,11 +605,11 @@ func (c *cli) cmdTest(arg string) error {
 	var r struct {
 		Delay int `json:"delay"`
 	}
-	fmt.Printf("Проверяю «%s»…\n", x.Name)
+	fmt.Printf("%s %s%s\n", L("Проверяю", "Testing"), shown(x.Name), sym("…", "..."))
 	if err := c.call(http.MethodPost, "/api/servers/"+x.ID+"/test", nil, &r); err != nil {
 		return err
 	}
-	fmt.Printf("«%s»: %s\n", x.Name, c.delayColored(r.Delay))
+	fmt.Printf("%s: %s\n", shown(x.Name), c.delayColored(r.Delay))
 	return nil
 }
 
@@ -555,31 +622,38 @@ func (c *cli) cmdConns(filter string, limit int) error {
 	}
 	f := strings.ToLower(strings.TrimSpace(filter))
 	byVia := map[string]int{}
-	shown := 0
+	shownN := 0
 	for _, x := range r.Connections {
-		byVia[x.Via]++
+		key := x.Via
+		if x.Internal {
+			key = L("служебные", "internal")
+		}
+		byVia[key]++
 		if f != "" && !strings.Contains(strings.ToLower(x.Host+" "+x.DstIP+" "+x.Src+" "+x.Via), f) {
 			continue
 		}
-		if shown < limit {
-			fmt.Printf("  %s  %s\n", c.connLine(x), c.dim("↓"+bytesRU(x.Down)+" ↑"+bytesRU(x.Up)))
+		if shownN < limit {
+			fmt.Printf("  %s  %s\n", c.connLine(x), c.dim(sym("↓", "down ")+bytesHuman(x.Down)+" "+sym("↑", "up ")+bytesHuman(x.Up)))
 		}
-		shown++
+		shownN++
 	}
 	parts := []string{}
 	for k, n := range byVia {
+		if asciiOut {
+			k = translit(k)
+		}
 		parts = append(parts, fmt.Sprintf("%s: %d", k, n))
 	}
 	sort.Strings(parts)
-	fmt.Printf("Всего соединений %d", len(r.Connections))
+	fmt.Printf("%s %d", L("Всего соединений", "Total connections"), len(r.Connections))
 	if len(parts) > 0 {
 		fmt.Printf(" (%s)", strings.Join(parts, ", "))
 	}
 	if f != "" {
-		fmt.Printf(", по фильтру «%s»: %d", filter, shown)
+		fmt.Printf(L(", по фильтру «%s»: %d", ", matching %q: %d"), filter, shownN)
 	}
-	if shown > limit {
-		fmt.Printf(", показаны первые %d", limit)
+	if shownN > limit {
+		fmt.Printf(L(", показаны первые %d", ", first %d shown"), limit)
 	}
 	fmt.Println()
 	return nil
@@ -623,9 +697,9 @@ func (c *cli) cmdLogs(q string, n int, follow bool) error {
 	}
 	if len(lines) == 0 {
 		if q != "" {
-			fmt.Println(c.dim("по фильтру «" + q + "» ничего нет"))
+			fmt.Println(c.dim(fmt.Sprintf(L("по фильтру «%s» ничего нет", "nothing matches %q"), q)))
 		} else {
-			fmt.Println(c.dim("журнал пуст"))
+			fmt.Println(c.dim(L("журнал пуст", "log is empty")))
 		}
 	}
 	if !follow {
@@ -636,7 +710,7 @@ func (c *cli) cmdLogs(q string, n int, follow bool) error {
 			seq = all[len(all)-1].Seq
 		}
 	}
-	fmt.Println(c.dim("— новые строки; Enter — выход —"))
+	fmt.Println(c.dim(L("— новые строки; Enter — выход —", "-- new lines; Enter to stop --")))
 	stop, cancel := c.stopper()
 	defer cancel()
 	for {
@@ -697,18 +771,10 @@ func (c *cli) watch() error {
 		c.clear()
 		c.printHeader(s, a)
 		fmt.Println(c.sparkline(a.History))
-		if len(a.Events) > 0 {
-			fmt.Println(c.dim("События:"))
-			for i, e := range a.Events {
-				if i >= 3 {
-					break
-				}
-				fmt.Printf("  %s %s\n", c.dim(e.T.Local().Format("15:04:05")), e.Msg)
-			}
-		}
-		fmt.Println(c.dim("Последние запросы:"))
+		c.printEvents(a, 3)
+		fmt.Println(c.dim(L("Последние запросы:", "Recent requests:")))
 		c.printRecent(a, 15)
-		fmt.Println(c.dim("— обновление каждые 2 с; Enter — назад —"))
+		fmt.Println(c.dim(L("— обновление каждые 2 с; Enter — назад —", "-- refresh every 2 s; Enter to go back --")))
 		select {
 		case <-stop:
 			return nil
@@ -724,7 +790,7 @@ func (c *cli) sparkline(h []RatePoint) string {
 	if len(h) > 60 {
 		h = h[len(h)-60:]
 	}
-	bars := []rune("▁▂▃▄▅▆▇█")
+	bars := []rune(sym("▁▂▃▄▅▆▇█", "_.:-=+*#"))
 	var mx int64 = 1
 	for _, p := range h {
 		if p.Down > mx {
@@ -736,7 +802,8 @@ func (c *cli) sparkline(h []RatePoint) string {
 		i := int(p.Down * int64(len(bars)-1) / mx)
 		b.WriteRune(bars[i])
 	}
-	return c.dim("↓ за ") + c.dim(strconv.Itoa(len(h)*5/60)+" мин: ") + c.cyan(b.String()) + c.dim(" пик "+rateRU(mx))
+	mins := strconv.Itoa(len(h) * 5 / 60)
+	return c.dim(L("↓ за "+mins+" мин: ", "down, last "+mins+" min: ")) + c.cyan(b.String()) + c.dim(L(" пик ", " peak ")+rateHuman(mx))
 }
 
 func (c *cli) add(text string) error {
@@ -747,13 +814,13 @@ func (c *cli) add(text string) error {
 	}
 	err := c.call(http.MethodPost, "/api/servers", map[string]string{"text": text}, &r)
 	if r.Added > 0 {
-		fmt.Printf("%s добавлено: %d\n", c.green("✓"), r.Added)
+		fmt.Printf("%s %s %d\n", c.green(sym("✓", "+")), L("добавлено:", "added:"), r.Added)
 	}
 	for _, e := range r.Errors {
-		fmt.Println(c.red("  ✕ ") + e)
+		fmt.Println(c.red(sym("  ✕ ", "  x ")) + e)
 	}
 	if r.Warning != "" {
-		fmt.Println(c.yellow("  mihomo не перечитал список: ") + r.Warning)
+		fmt.Println(c.yellow(L("  mihomo не перечитал список: ", "  mihomo did not reload the list: ")) + r.Warning)
 	}
 	if err != nil && r.Added == 0 && len(r.Errors) == 0 {
 		return err
@@ -764,7 +831,7 @@ func (c *cli) add(text string) error {
 // ---------- интерактивное меню ----------
 
 func (c *cli) help() {
-	fmt.Print(`Команды (N — номер сервера из списка):
+	fmt.Print(L(`Команды (N — номер сервера из списка):
   Enter / r   обновить              w         монитор: скорость и запросы вживую
   u N         использовать N        s [текст] текущие соединения (фильтр)
   c N         проверить N           j [текст] журнал mihomo (фильтр)
@@ -776,9 +843,21 @@ func (c *cli) help() {
   l N         журнал naive N        b         бэкап (JSON на экран)
   q           выход
 Разовые команды: vpn status | list | use N | mode auto | test [N] | conns [текст] | logs [-f] [текст]
-Терминал RouterOS не показывает кириллицу — по умолчанию вывод транслитом.
-В нормальном SSH-терминале: vpn --utf8 (или VPN_UTF8=1, LANG=*.UTF-8).
-`)
+Язык: в терминале RouterOS (только ASCII) — английский; vpn --en / --ru — выбрать явно.
+`, `Commands (N = server number from the list):
+  Enter / r   refresh               w         live monitor: speed and requests
+  u N         use server N          s [text]  current connections (filter)
+  c N         test server N         j [text]  mihomo log (filter)
+  t           test all              f [text]  follow mihomo log
+  m           mode (auto / fallback / manual / load balance / no VPN)
+  a           add servers (paste links)
+  e N         edit N                o N       enable / disable N
+  k N         move N up             d N       delete N
+  l N         naive log of N        b         backup (JSON on screen)
+  q           quit
+One-shot: vpn status | list | use N | mode auto | test [N] | conns [text] | logs [-f] [text]
+Language: English in the RouterOS terminal (ASCII only); vpn --ru for Russian in a UTF-8 terminal.
+`))
 }
 
 func (c *cli) readLine(prompt string) (string, bool) {
@@ -817,7 +896,8 @@ func (c *cli) menu() error {
 		if msg != "" {
 			fmt.Println(msg)
 		}
-		fmt.Println(c.dim("u N использовать · c N проверить · t все · m режим · a добавить · e/o/d/k N · w монитор · s соединения · j журнал · ? помощь · q выход"))
+		fmt.Println(c.dim(L("u N использовать · c N проверить · t все · m режим · a добавить · e/o/d/k N · w монитор · s соединения · j журнал · ? помощь · q выход",
+			"u N use | c N test | t test all | m mode | a add | e/o/d/k N | w monitor | s connections | j log | ? help | q quit")))
 		line, ok := c.readLine("> ")
 		if !ok {
 			fmt.Println()
@@ -841,10 +921,10 @@ func (c *cli) menu() error {
 			cerr = c.withArg(arg, c.cmdTest)
 			c.pause()
 		case "t":
-			fmt.Println("Проверяю все…")
+			fmt.Println(L("Проверяю все…", "Testing all..."))
 			cerr = c.call(http.MethodPost, "/api/test-all", nil, nil)
 			if cerr == nil {
-				msg = c.green("✓ проверено")
+				msg = c.green(L("✓ проверено", "+ tested"))
 			}
 		case "m":
 			cerr = c.menuMode(s.Mode)
@@ -868,7 +948,7 @@ func (c *cli) menu() error {
 				if err != nil {
 					return err
 				}
-				if l, _ := c.readLine(fmt.Sprintf("Удалить «%s»? (да/нет) ", x.Name)); !isYes(l) {
+				if l, _ := c.readLine(fmt.Sprintf(L("Удалить %s? (да/нет) ", "Delete %s? (yes/no) "), shown(x.Name))); !isYes(l) {
 					return nil
 				}
 				return c.call(http.MethodDelete, "/api/servers/"+x.ID, nil, nil)
@@ -888,9 +968,9 @@ func (c *cli) menu() error {
 					return err
 				}
 				c.clear()
-				fmt.Println(c.bold("Журнал naive: " + x.Name))
+				fmt.Println(c.bold(L("Журнал naive: ", "naive log: ") + shown(x.Name)))
 				if len(r.Lines) == 0 {
-					fmt.Println(c.dim("пусто — процесс не запускался (это не naive-сервер?)"))
+					fmt.Println(c.dim(L("пусто — процесс не запускался (это не naive-сервер?)", "empty - process never started (not a naive server?)")))
 				}
 				for _, l := range r.Lines {
 					fmt.Println(l)
@@ -918,14 +998,15 @@ func (c *cli) menu() error {
 				var buf bytes.Buffer
 				_ = json.Indent(&buf, raw, "", "  ")
 				fmt.Println(buf.String())
-				fmt.Println(c.yellow("В бэкапе пароли серверов. Скопируйте и сохраните в надёжном месте."))
+				fmt.Println(c.yellow(L("В бэкапе пароли серверов. Скопируйте и сохраните в надёжном месте.",
+					"The backup contains server passwords. Copy it and keep it somewhere safe.")))
 				c.pause()
 			}
 		default:
-			msg = c.yellow("не понял «" + line + "». ? — помощь")
+			msg = c.yellow(fmt.Sprintf(L("не понял «%s». ? — помощь", "unknown command %q. ? for help"), line))
 		}
 		if cerr != nil {
-			msg = c.red("ошибка: ") + cerr.Error()
+			msg = c.red(L("ошибка: ", "error: ")) + cerr.Error()
 		}
 	}
 }
@@ -938,11 +1019,11 @@ func isYes(s string) bool {
 	return false
 }
 
-func (c *cli) pause() { c.readLine(c.dim("Enter — назад ")) }
+func (c *cli) pause() { c.readLine(c.dim(L("Enter — назад ", "Enter to go back "))) }
 
 func (c *cli) withArg(arg string, fn func(string) error) error {
 	if arg == "" {
-		l, ok := c.readLine("Номер сервера: ")
+		l, ok := c.readLine(L("Номер сервера: ", "Server number: "))
 		if !ok || l == "" {
 			return nil
 		}
@@ -952,16 +1033,15 @@ func (c *cli) withArg(arg string, fn func(string) error) error {
 }
 
 func (c *cli) menuMode(cur string) error {
-	fmt.Println("Режим:")
+	fmt.Println(L("Режим:", "Mode:"))
 	for i, k := range []string{"AUTO", "FALLBACK", "MANUAL", "LOADBALANCE", "DIRECT"} {
 		mark := "  "
 		if k == cur {
-			mark = c.cyan("→ ")
+			mark = c.cyan(sym("→ ", "> "))
 		}
-		fmt.Printf("  %s%d  %s\n", mark, i+1, map[string]string{"AUTO": "авто (самый быстрый)", "FALLBACK": "резерв по порядку",
-			"MANUAL": "вручную", "LOADBALANCE": "балансировка", "DIRECT": "без VPN"}[k])
+		fmt.Printf("  %s%d  %s\n", mark, i+1, modeLong(k))
 	}
-	l, ok := c.readLine("Номер (пусто — отмена): ")
+	l, ok := c.readLine(L("Номер (пусто — отмена): ", "Number (empty = cancel): "))
 	if !ok || l == "" {
 		return nil
 	}
@@ -969,8 +1049,9 @@ func (c *cli) menuMode(cur string) error {
 }
 
 func (c *cli) menuAdd() error {
-	fmt.Println("Вставьте ссылки по одной в строке (vless://, hy2://, mierus://, naive+https://…).")
-	fmt.Println(c.dim("Пустая строка — закончить."))
+	fmt.Println(L("Вставьте ссылки по одной в строке (vless://, hy2://, mierus://, naive+https://…).",
+		"Paste links, one per line (vless://, hy2://, mierus://, naive+https://...)."))
+	fmt.Println(c.dim(L("Пустая строка — закончить.", "Empty line to finish.")))
 	var lines []string
 	for {
 		l, ok := c.readLine("")
@@ -994,13 +1075,13 @@ func (c *cli) menuEdit(arg string) error {
 	if err := c.call(http.MethodGet, "/api/export?id="+url.QueryEscape(x.ID), nil, &full); err != nil {
 		return err
 	}
-	fmt.Printf("Имя: %s\n", full.Name)
-	name, ok := c.readLine("Новое имя (пусто — оставить): ")
+	fmt.Printf("%s %s\n", L("Имя:", "Name:"), full.Name)
+	name, ok := c.readLine(L("Новое имя (пусто — оставить): ", "New name (empty = keep): "))
 	if !ok {
 		return nil
 	}
-	fmt.Printf("Ссылка: %s\n", c.dim(full.URI))
-	uri, ok := c.readLine("Новая ссылка (пусто — оставить): ")
+	fmt.Printf("%s %s\n", L("Ссылка:", "Link:"), c.dim(full.URI))
+	uri, ok := c.readLine(L("Новая ссылка (пусто — оставить): ", "New link (empty = keep): "))
 	if !ok {
 		return nil
 	}
@@ -1020,7 +1101,7 @@ func (c *cli) menuEdit(arg string) error {
 func (c *cli) moveUp(s *cliState, arg string) error {
 	n, err := strconv.Atoi(arg)
 	if err != nil || n < 2 || n > len(s.Servers) {
-		return fmt.Errorf("укажите номер 2…%d", len(s.Servers))
+		return fmt.Errorf(L("укажите номер 2…%d", "give a number 2..%d"), len(s.Servers))
 	}
 	ids := make([]string, len(s.Servers))
 	for i, x := range s.Servers {

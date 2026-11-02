@@ -86,6 +86,7 @@ type Event struct {
 	T     time.Time `json:"t"`
 	Level string    `json:"level"`
 	Msg   string    `json:"msg"`
+	MsgEN string    `json:"msg_en,omitempty"` // для консоли в терминале RouterOS (только ASCII)
 }
 
 type LogLine struct {
@@ -179,14 +180,14 @@ func (m *Monitor) poll(ctx context.Context) {
 	defer m.mu.Unlock()
 	if err != nil {
 		if m.ok {
-			m.eventLocked("warn", "mihomo API недоступен: "+err.Error())
+			m.eventLocked("warn", "mihomo API недоступен: "+err.Error(), "mihomo API unreachable: "+err.Error())
 			m.log.Warn("mihomo api unreachable", "err", err)
 		}
 		m.ok, m.err = false, err.Error()
 		return
 	}
 	if !m.ok && !m.lastPoll.IsZero() {
-		m.eventLocked("info", "mihomo API снова отвечает")
+		m.eventLocked("info", "mihomo API снова отвечает", "mihomo API is back")
 	}
 	m.ok, m.err = true, ""
 
@@ -222,7 +223,7 @@ func (m *Monitor) poll(ctx context.Context) {
 		m.perNew++
 		m.perHosts[hostKey(v)]++
 		if m.logConns {
-			m.log.Info(fmt.Sprintf("conn %s %s -> %s:%s via %s rule %s", v.Net, v.Src, firstNonEmpty(v.Host, v.DstIP), v.Port, v.Via, v.Rule))
+			m.log.Info(rosLine(fmt.Sprintf("conn %s %s -> %s:%s via %s rule %s", v.Net, v.Src, firstNonEmpty(v.Host, v.DstIP), v.Port, enName(v.Via), v.Rule)))
 		}
 	}
 	if n := len(m.recent); n > recentMax {
@@ -303,17 +304,18 @@ func (m *Monitor) pollVia(ctx context.Context) {
 	m.via, m.viaPath, m.viaAlive, m.viaDelay = via, path, alive, delay
 	switch {
 	case prev == "":
-		m.eventLocked("info", fmt.Sprintf("трафик идёт через %s (%s)", via, strings.Join(path, " → ")))
-		m.log.Info(fmt.Sprintf("route: via %s (%s) alive=%s delay=%s", via, strings.Join(path, ">"), yesno(alive), msStr(delay)))
+		m.eventLocked("info", fmt.Sprintf("трафик идёт через %s (%s)", via, strings.Join(path, " → ")),
+			enName(fmt.Sprintf("traffic via %s (%s)", via, strings.Join(path, " > "))))
+		m.log.Info(rosLine(fmt.Sprintf("route: via %s (%s) alive=%s delay=%s", via, strings.Join(path, ">"), yesno(alive), msStr(delay))))
 	case prev != via:
-		m.eventLocked("warn", fmt.Sprintf("сервер сменился: %s → %s", prev, via))
-		m.log.Warn(fmt.Sprintf("route changed: %s -> %s (%s)", prev, via, strings.Join(path, ">")))
+		m.eventLocked("warn", fmt.Sprintf("сервер сменился: %s → %s", prev, via), enName(fmt.Sprintf("server changed: %s -> %s", prev, via)))
+		m.log.Warn(rosLine(fmt.Sprintf("route changed: %s -> %s (%s)", prev, via, strings.Join(path, ">"))))
 	case prevAlive && !alive:
-		m.eventLocked("bad", fmt.Sprintf("нет связи с %s", via))
-		m.log.Warn(fmt.Sprintf("server %s DOWN", via))
+		m.eventLocked("bad", fmt.Sprintf("нет связи с %s", via), enName(fmt.Sprintf("%s is DOWN", via)))
+		m.log.Warn(rosLine(fmt.Sprintf("server %s DOWN", via)))
 	case !prevAlive && alive:
-		m.eventLocked("info", fmt.Sprintf("связь с %s восстановлена, %s", via, msStr(delay)))
-		m.log.Info(fmt.Sprintf("server %s UP delay=%s", via, msStr(delay)))
+		m.eventLocked("info", fmt.Sprintf("связь с %s восстановлена, %s", via, msStr(delay)), enName(fmt.Sprintf("%s is UP, %s", via, msStr(delay))))
+		m.log.Info(rosLine(fmt.Sprintf("server %s UP delay=%s", via, msStr(delay))))
 	}
 }
 
@@ -338,24 +340,24 @@ func (m *Monitor) logStatus() {
 		tops = append(tops, fmt.Sprintf("%s:%d", top[i].k, top[i].n))
 	}
 	per := m.statusEvery.Round(time.Second).String()
-	m.log.Info(fmt.Sprintf("status: via=%s alive=%s delay=%s conns=%d rate down=%s up=%s | last %s: new=%d down=%s up=%s top=%s",
-		firstNonEmpty(m.via, "?"), yesno(m.viaAlive), msStr(m.viaDelay), len(m.conns),
-		rateStr(m.dnRate), rateStr(m.upRate), per, m.perNew, bytesStr(m.perDn), bytesStr(m.perUp), firstNonEmpty(strings.Join(tops, ","), "-")))
+	m.log.Info(rosLine(fmt.Sprintf("status: via=%s alive=%s delay=%s conns=%d rate down=%s up=%s | last %s: new=%d down=%s up=%s top=%s",
+		enName(firstNonEmpty(m.via, "?")), yesno(m.viaAlive), msStr(m.viaDelay), len(m.conns),
+		rateStr(m.dnRate), rateStr(m.upRate), per, m.perNew, bytesStr(m.perDn), bytesStr(m.perUp), firstNonEmpty(strings.Join(tops, ","), "-"))))
 	m.perNew, m.perUp, m.perDn = 0, 0, 0
 	m.perHosts = map[string]int{}
 }
 
-func (m *Monitor) eventLocked(level, msg string) {
-	m.events = append(m.events, Event{T: time.Now(), Level: level, Msg: msg})
+func (m *Monitor) eventLocked(level, msg, msgEN string) {
+	m.events = append(m.events, Event{T: time.Now(), Level: level, Msg: msg, MsgEN: msgEN})
 	if n := len(m.events); n > eventsMax {
 		m.events = append([]Event(nil), m.events[n-eventsMax:]...)
 	}
 }
 
 // Event — событие панели (смена сервера и т.п.) для веба/консоли.
-func (m *Monitor) Event(level, msg string) {
+func (m *Monitor) Event(level, msg, msgEN string) {
 	m.mu.Lock()
-	m.eventLocked(level, msg)
+	m.eventLocked(level, msg, msgEN)
 	m.mu.Unlock()
 }
 
@@ -488,6 +490,14 @@ func (m *Monitor) Logs(after int64, limit int, filter string) []LogLine {
 	}
 	return out
 }
+
+// enName — имя прокси для английского текста: русская заглушка «Нет серверов» → no servers (direct).
+func enName(s string) string {
+	return strings.ReplaceAll(s, EmptyPlaceholder, "no servers (direct)")
+}
+
+// rosLine — строка для журнала RouterOS: только ASCII (русские имена серверов — транслитом).
+func rosLine(s string) string { return translit(enName(s)) }
 
 func yesno(b bool) string {
 	if b {

@@ -549,7 +549,7 @@ func (a *App) hUse(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
-	a.mon.Event("info", "выбран вручную: "+name)
+	a.mon.Event("info", "выбран вручную: "+name, "selected manually: "+name)
 	go a.mon.pollVia(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": name})
 }
@@ -574,7 +574,7 @@ func (a *App) hMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
-	a.mon.Event("info", "режим: "+req.Mode)
+	a.mon.Event("info", "режим: "+req.Mode, "mode: "+req.Mode)
 	go a.mon.pollVia(context.Background())
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
