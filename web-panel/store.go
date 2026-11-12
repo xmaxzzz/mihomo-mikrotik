@@ -26,6 +26,8 @@ type Server struct {
 	Order     int       `json:"order"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
+	Sub       *SubInfo  `json:"sub,omitempty"`    // только у Type == "sub": ссылка подписки в URI
+	Parent    string    `json:"parent,omitempty"` // сервер из подписки: ID подписки
 }
 
 type storeData struct {
@@ -79,7 +81,7 @@ func (s *Store) List() []Server {
 func (s *Store) Get(id string) (Server, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for _, sv := range s.data.Servers {
+	for _, sv := range s.everyLocked() {
 		if sv.ID == id {
 			return sv, true
 		}
@@ -87,8 +89,64 @@ func (s *Store) Get(id string) (Server, bool) {
 	return Server{}, false
 }
 
+// everyLocked — все серверы: верхнего уровня и из подписок (копии, Parent заполнен).
+func (s *Store) everyLocked() []Server {
+	out := make([]Server, 0, len(s.data.Servers))
+	for _, sv := range s.data.Servers {
+		out = append(out, sv)
+		if sv.Type == "sub" && sv.Sub != nil {
+			for _, it := range sv.Sub.Items {
+				it.Parent = sv.ID
+				it.Enabled = sv.Enabled
+				out = append(out, it)
+			}
+		}
+	}
+	return out
+}
+
+// Expanded — список для отображения и работы: подписка, сразу за ней её серверы.
+// Серверы подписки включены/выключены вместе с ней.
+func (s *Store) Expanded() []Server {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.expandedLocked()
+}
+
+func (s *Store) expandedLocked() []Server {
+	top := make([]Server, len(s.data.Servers))
+	copy(top, s.data.Servers)
+	sort.SliceStable(top, func(i, j int) bool { return top[i].Order < top[j].Order })
+	out := make([]Server, 0, len(top))
+	for _, sv := range top {
+		out = append(out, sv)
+		if sv.Type == "sub" && sv.Sub != nil {
+			for _, it := range sv.Sub.Items {
+				it.Parent = sv.ID
+				it.Enabled = sv.Enabled
+				out = append(out, it)
+			}
+		}
+	}
+	return out
+}
+
+// Active — включённые реальные серверы (без строк-подписок) в порядке списка: для naive и mihomo.
+func (s *Store) Active() []Server {
+	var out []Server
+	for _, sv := range s.Expanded() {
+		if sv.Enabled && sv.Type != "sub" {
+			out = append(out, sv)
+		}
+	}
+	return out
+}
+
 // Add добавляет сервер из ссылки. name пустой — берётся из ссылки или host:port.
 func (s *Store) Add(uri, name string) (Server, error) {
+	if isSubURL(uri) {
+		return s.addSub(uri, name)
+	}
 	p, err := ParseURI(uri)
 	if err != nil {
 		return Server{}, err
@@ -113,6 +171,96 @@ func (s *Store) Add(uri, name string) (Server, error) {
 	return sv, s.saveLocked()
 }
 
+func (s *Store) addSub(raw, name string) (Server, error) {
+	u, err := validateSubURL(raw)
+	if err != nil {
+		return Server{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, sv := range s.data.Servers {
+		if sv.Type == "sub" && sv.URI == u {
+			return Server{}, Ef("подписка уже добавлена: %s", "subscription already added: %s", sv.Name)
+		}
+	}
+	sv := Server{
+		ID:        newID(),
+		Name:      s.uniqueName(cleanName(firstNonEmpty(name, subHost(u))), ""),
+		Type:      "sub",
+		URI:       u,
+		Enabled:   true,
+		Order:     s.nextOrder(),
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+		Sub:       &SubInfo{},
+	}
+	s.data.Servers = append(s.data.Servers, sv)
+	return sv, s.saveLocked()
+}
+
+// SetSubResult сохраняет итог обновления подписки. Серверы с той же ссылкой сохраняют
+// ID, имя и локальный порт naive (чтобы не дёргать процессы и выбор в mihomo).
+// Возвращает true, если набор серверов изменился.
+func (s *Store) SetSubResult(id string, res *subResult, ferr error) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	idx := -1
+	for i := range s.data.Servers {
+		if s.data.Servers[i].ID == id && s.data.Servers[i].Type == "sub" {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return false, errNotFound
+	}
+	sv := &s.data.Servers[idx]
+	if sv.Sub == nil {
+		sv.Sub = &SubInfo{}
+	}
+	now := time.Now().UTC()
+	sv.Sub.CheckedAt = now
+	if ferr != nil {
+		sv.Sub.Error, sv.Sub.ErrorEN = errText(ferr, false), errText(ferr, true)
+		return false, s.saveLocked()
+	}
+	old := map[string]Server{}
+	for _, it := range sv.Sub.Items {
+		old[it.URI] = it
+	}
+	before := len(sv.Sub.Items)
+	sv.Sub.Items = nil // имена и порты считаем заново, без старого набора этой подписки
+	changed := false
+	for _, it := range res.Items {
+		var ch Server
+		if o, ok := old[it.URI]; ok {
+			ch = o
+			ch.Name = s.uniqueName(o.Name, o.ID)
+			delete(old, it.URI)
+		} else {
+			changed = true
+			ch = Server{ID: newID(), Name: s.uniqueName(firstNonEmpty(it.Name, "server"), ""), Type: it.Type,
+				URI: it.URI, Enabled: true, CreatedAt: now}
+		}
+		ch.Type, ch.Parent, ch.Order, ch.UpdatedAt = it.Type, "", len(sv.Sub.Items), now
+		if ch.Type == "naive" {
+			if ch.LocalPort == 0 || s.portTaken(ch.LocalPort, ch.ID) {
+				ch.LocalPort = s.freePort(ch.ID)
+			}
+		} else {
+			ch.LocalPort = 0
+		}
+		sv.Sub.Items = append(sv.Sub.Items, ch)
+	}
+	if len(old) > 0 || before != len(sv.Sub.Items) {
+		changed = true
+	}
+	sv.Sub.UpdatedAt, sv.Sub.Error, sv.Sub.ErrorEN = now, "", ""
+	sv.Sub.Skipped = res.Skipped
+	sv.Sub.IntervalH = res.IntervalH
+	sv.Sub.Upload, sv.Sub.Download, sv.Sub.Total, sv.Sub.Expire = res.Upload, res.Download, res.Total, res.Expire
+	return changed, s.saveLocked()
+}
+
 type Patch struct {
 	Name    *string `json:"name"`
 	URI     *string `json:"uri"`
@@ -130,10 +278,23 @@ func (s *Store) Update(id string, p Patch) (Server, error) {
 		}
 	}
 	if idx < 0 {
+		if s.isChildLocked(id) {
+			return Server{}, errChild
+		}
 		return Server{}, errNotFound
 	}
 	sv := s.data.Servers[idx]
-	if p.URI != nil {
+	if p.URI != nil && sv.Type == "sub" {
+		u, err := validateSubURL(*p.URI)
+		if err != nil {
+			return Server{}, err
+		}
+		sv.URI = u
+	} else if p.URI != nil {
+		if isSubURL(*p.URI) {
+			return Server{}, E("сервер нельзя превратить в подписку — добавьте подписку отдельно",
+				"a server cannot become a subscription - add the subscription separately")
+		}
 		pu, err := ParseURI(*p.URI)
 		if err != nil {
 			return Server{}, err
@@ -150,10 +311,10 @@ func (s *Store) Update(id string, p Patch) (Server, error) {
 	if p.Name != nil {
 		n := cleanName(*p.Name)
 		if n == "" {
-			return Server{}, errors.New("имя не может быть пустым")
+			return Server{}, E("имя не может быть пустым", "name must not be empty")
 		}
 		if s.nameTaken(n, sv.ID) {
-			return Server{}, fmt.Errorf("имя %q уже занято", n)
+			return Server{}, Ef("имя %q уже занято", "name %q is already taken", n)
 		}
 		sv.Name = n
 	}
@@ -168,7 +329,23 @@ func (s *Store) Update(id string, p Patch) (Server, error) {
 	return sv, s.saveLocked()
 }
 
-var errNotFound = errors.New("сервер не найден")
+var errNotFound = E("сервер не найден", "server not found")
+
+var errChild = E("это сервер из подписки — менять, выключать и удалять можно только подписку целиком",
+	"this server comes from a subscription - edit, disable or delete the subscription instead")
+
+func (s *Store) isChildLocked(id string) bool {
+	for _, sv := range s.data.Servers {
+		if sv.Sub != nil {
+			for _, it := range sv.Sub.Items {
+				if it.ID == id {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
 
 // EmptyPlaceholder — имя direct-заглушки, когда нет ни одного включённого сервера.
 const EmptyPlaceholder = "Нет серверов (напрямую)"
@@ -182,6 +359,9 @@ func (s *Store) Delete(id string) error {
 			return s.saveLocked()
 		}
 	}
+	if s.isChildLocked(id) {
+		return errChild
+	}
 	return errNotFound
 }
 
@@ -192,6 +372,39 @@ func (s *Store) Replace(in []Server) (int, []string, error) {
 	var errs []string
 	s.data.Servers = nil
 	for i, sv := range in {
+		if sv.Type == "sub" || isSubURL(sv.URI) {
+			u, err := validateSubURL(sv.URI)
+			if err != nil {
+				errs = append(errs, fmt.Sprintf("%q: %v", sv.Name, err))
+				continue
+			}
+			sv.URI, sv.Type, sv.LocalPort, sv.Order = u, "sub", 0, i
+			if sv.ID == "" {
+				sv.ID = newID()
+			}
+			sv.Name = s.uniqueName(cleanName(firstNonEmpty(sv.Name, subHost(u))), "")
+			if sv.Sub == nil {
+				sv.Sub = &SubInfo{}
+			}
+			var items []Server
+			for _, it := range sv.Sub.Items {
+				if p, err := ParseURI(it.URI); err == nil {
+					it.Type, it.LocalPort, it.Parent = p.Type, 0, ""
+					if it.ID == "" {
+						it.ID = newID()
+					}
+					items = append(items, it)
+				}
+			}
+			sv.Sub.Items = nil
+			s.data.Servers = append(s.data.Servers, sv)
+			last := &s.data.Servers[len(s.data.Servers)-1]
+			for _, it := range items {
+				it.Name = s.uniqueName(cleanName(firstNonEmpty(it.Name, "server")), "")
+				last.Sub.Items = append(last.Sub.Items, it)
+			}
+			continue
+		}
 		p, err := ParseURI(sv.URI)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%q: %v", sv.Name, err))
@@ -211,8 +424,16 @@ func (s *Store) Replace(in []Server) (int, []string, error) {
 		s.data.Servers = append(s.data.Servers, sv)
 	}
 	for i := range s.data.Servers {
-		if s.data.Servers[i].Type == "naive" {
-			s.data.Servers[i].LocalPort = s.freePort(s.data.Servers[i].ID)
+		sv := &s.data.Servers[i]
+		if sv.Type == "naive" {
+			sv.LocalPort = s.freePort(sv.ID)
+		}
+		if sv.Sub != nil {
+			for j := range sv.Sub.Items {
+				if sv.Sub.Items[j].Type == "naive" {
+					sv.Sub.Items[j].LocalPort = s.freePort(sv.Sub.Items[j].ID)
+				}
+			}
 		}
 	}
 	return len(s.data.Servers), errs, s.saveLocked()
@@ -229,11 +450,8 @@ func (s *Store) Render() error {
 
 func (s *Store) renderLocked() error {
 	var lines []string
-	srv := make([]Server, len(s.data.Servers))
-	copy(srv, s.data.Servers)
-	sort.SliceStable(srv, func(i, j int) bool { return srv[i].Order < srv[j].Order })
-	for _, sv := range srv {
-		if !sv.Enabled {
+	for _, sv := range s.expandedLocked() {
+		if !sv.Enabled || sv.Type == "sub" {
 			continue
 		}
 		if sv.Type == "naive" {
@@ -278,7 +496,7 @@ func (s *Store) nextOrder() int {
 }
 
 func (s *Store) nameTaken(name, exceptID string) bool {
-	for _, sv := range s.data.Servers {
+	for _, sv := range s.everyLocked() {
 		if sv.ID != exceptID && strings.EqualFold(sv.Name, name) {
 			return true
 		}
@@ -301,9 +519,18 @@ func (s *Store) uniqueName(name, exceptID string) string {
 	}
 }
 
+func (s *Store) portTaken(port int, exceptID string) bool {
+	for _, sv := range s.everyLocked() {
+		if sv.ID != exceptID && sv.LocalPort == port {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) freePort(exceptID string) int {
 	used := map[int]bool{}
-	for _, sv := range s.data.Servers {
+	for _, sv := range s.everyLocked() {
 		if sv.ID != exceptID && sv.LocalPort > 0 {
 			used[sv.LocalPort] = true
 		}

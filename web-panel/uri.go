@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -40,7 +39,7 @@ type ParsedURI struct {
 	Name   string // из #fragment (или ps у vmess)
 }
 
-var errEmpty = errors.New("пустая ссылка")
+var errEmpty = E("пустая ссылка", "empty link")
 
 func ParseURI(raw string) (*ParsedURI, error) {
 	raw = strings.TrimSpace(raw)
@@ -48,16 +47,16 @@ func ParseURI(raw string) (*ParsedURI, error) {
 		return nil, errEmpty
 	}
 	if strings.ContainsAny(raw, " \t\r\n") {
-		return nil, errors.New("ссылка не должна содержать пробелов и переносов строк")
+		return nil, E("ссылка не должна содержать пробелов и переносов строк", "link must not contain spaces or line breaks")
 	}
 	scheme, body, ok := strings.Cut(raw, "://")
 	if !ok || body == "" {
-		return nil, errors.New("не похоже на ссылку: нет схемы вида vless://")
+		return nil, E("не похоже на ссылку: нет схемы вида vless://", "not a link: no scheme like vless://")
 	}
 	scheme = strings.ToLower(scheme)
 	typ, ok := schemeTypes[scheme]
 	if !ok {
-		return nil, fmt.Errorf("схема %q не поддерживается", scheme)
+		return nil, Ef("схема %q не поддерживается", "scheme %q is not supported", scheme)
 	}
 	p := &ParsedURI{Scheme: scheme, Type: typ}
 
@@ -73,7 +72,7 @@ func ParseURI(raw string) (*ParsedURI, error) {
 			p.Name = ps
 		}
 		if p.Host == "" || p.Host == "<nil>" {
-			return nil, errors.New("vmess: нет адреса сервера")
+			return nil, E("vmess: нет адреса сервера", "vmess: no server address")
 		}
 		return p, nil
 	}
@@ -88,19 +87,19 @@ func ParseURI(raw string) (*ParsedURI, error) {
 		q := queryOf(raw)
 		ports, protos := q["port"], q["protocol"]
 		if len(ports) == 0 || len(ports) != len(protos) {
-			return nil, errors.New("mieru: нужно одинаковое количество параметров port и protocol")
+			return nil, E("mieru: нужно одинаковое количество параметров port и protocol", "mieru: port and protocol must come in equal numbers")
 		}
 		for _, pr := range protos {
 			if pr != "TCP" && pr != "UDP" {
-				return nil, fmt.Errorf("mieru: protocol должен быть TCP или UDP, получено %q", pr)
+				return nil, Ef("mieru: protocol должен быть TCP или UDP, получено %q", "mieru: protocol must be TCP or UDP, got %q", pr)
 			}
 		}
 		u, _ := url.Parse(raw)
 		if u == nil || u.User == nil || u.User.Username() == "" {
-			return nil, errors.New("mieru: нет имени пользователя")
+			return nil, E("mieru: нет имени пользователя", "mieru: no user name")
 		}
 		if _, ok := u.User.Password(); !ok {
-			return nil, errors.New("mieru: нет пароля")
+			return nil, E("mieru: нет пароля", "mieru: no password")
 		}
 		p2.Port = strings.Join(ports, ",")
 	case "naive":
@@ -113,11 +112,11 @@ func ParseURI(raw string) (*ParsedURI, error) {
 			return nil, fmt.Errorf("%s: %v", typ, err)
 		}
 		if u.User == nil || u.User.Username() == "" {
-			return nil, fmt.Errorf("%s: нет UUID/пароля перед @", typ)
+			return nil, Ef("%s: нет UUID/пароля перед @", "%s: no UUID/password before @", typ)
 		}
 	case "hysteria2":
 		if !strings.Contains(body, "@") {
-			return nil, errors.New("hysteria2: нет пароля (auth) перед @")
+			return nil, E("hysteria2: нет пароля (auth) перед @", "hysteria2: no password (auth) before @")
 		}
 	}
 	return p2, nil
@@ -152,7 +151,7 @@ func parseGeneric(p *ParsedURI, body string) (*ParsedURI, error) {
 		host, port = auth[:i], auth[i+1:]
 	}
 	if host == "" {
-		return nil, errors.New("не указан адрес сервера")
+		return nil, E("не указан адрес сервера", "no server address")
 	}
 	p.Host, p.Port = host, port
 	return p, nil
@@ -231,25 +230,25 @@ func NaiveArgs(raw string, localPort int) ([]string, error) {
 	raw = strings.TrimSpace(raw)
 	scheme, rest, ok := strings.Cut(raw, "://")
 	if !ok {
-		return nil, errors.New("naive: неверная ссылка")
+		return nil, E("naive: неверная ссылка", "naive: bad link")
 	}
 	proto := strings.TrimPrefix(strings.ToLower(scheme), "naive+")
 	if proto != "https" && proto != "quic" {
-		return nil, errors.New("naive: схема должна быть naive+https:// или naive+quic://")
+		return nil, E("naive: схема должна быть naive+https:// или naive+quic://", "naive: scheme must be naive+https:// or naive+quic://")
 	}
 	u, err := url.Parse(proto + "://" + rest)
 	if err != nil {
 		return nil, fmt.Errorf("naive: %v", err)
 	}
 	if u.Hostname() == "" {
-		return nil, errors.New("naive: нет адреса сервера")
+		return nil, E("naive: нет адреса сервера", "naive: no server address")
 	}
 	if u.User == nil || u.User.Username() == "" {
-		return nil, errors.New("naive: нет логина:пароля перед @")
+		return nil, E("naive: нет логина:пароля перед @", "naive: no login:password before @")
 	}
 	if p := u.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
-			return nil, fmt.Errorf("naive: неверный порт %q", p)
+			return nil, Ef("naive: неверный порт %q", "naive: bad port %q", p)
 		}
 	}
 	q := u.Query()

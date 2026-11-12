@@ -56,6 +56,11 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .row.active{background:color-mix(in srgb,var(--accent) 9%,var(--panel))}
 .name{font-weight:600;overflow-wrap:anywhere}
 .name .sub{display:block;font-weight:400;color:var(--muted);font-size:12.5px}
+.name .sub.err{color:var(--bad)}
+.row.child>.name{padding-left:18px;position:relative}
+.row.child>.name::before{content:"└";position:absolute;left:2px;color:var(--muted)}
+.row.subrow{background:var(--soft)}
+.type.sub{color:var(--accent)}
 .type{font-size:12px;font-weight:600;border:1px solid var(--line);border-radius:5px;padding:2px 6px;text-align:center;color:var(--muted)}
 .type.vless{color:#2a6fd6} .type.hysteria2{color:#a3489c} .type.mieru{color:#b06a00} .type.naive{color:#0b7a75}
 @media (prefers-color-scheme:dark){.type.vless{color:#7fb0ff}.type.hysteria2{color:#e39ad9}.type.mieru{color:#f0b35a}.type.naive{color:#4fd1c5}}
@@ -172,7 +177,7 @@ footer{margin-top:26px;color:var(--muted);font-size:13px;display:flex;gap:8px;fl
       <div class="addbody">
         <div class="tabs" role="tablist" id="tabs"></div>
         <div id="tabLinks">
-          <label for="links">Ссылки — по одной в строке: vless://, hy2://, hysteria2://, mierus://, naive+https://, naive+quic://</label>
+          <label for="links">Ссылки — по одной в строке: vless://, hy2://, hysteria2://, mierus://, naive+https://, naive+quic:// или ссылка подписки https://…</label>
           <textarea id="links" spellcheck="false" placeholder="hy2://пароль@vpn.example.com:443?sni=vpn.example.com#Нидерланды"></textarea>
           <div class="grid" style="margin-top:10px">
             <div><label for="linkName">Имя (необязательно, для первой ссылки)</label><input id="linkName" maxlength="64"></div>
@@ -301,13 +306,16 @@ function render(){
   $("#routeLbl").textContent = s.mode ? "Трафик идёт через ("+((MODES.find(x=>x[0]===s.mode)||[,s.mode])[1]).toLowerCase()+")" : "Трафик идёт через";
 
   // список
-  const on = s.servers.filter(x=>x.enabled).length;
-  $("#listTitle").textContent = "Серверы" + (s.servers.length ? " — "+on+" из "+s.servers.length+" включено" : "");
+  const real = s.servers.filter(x=>x.type!=="sub"), on = real.filter(x=>x.enabled).length;
+  $("#listTitle").textContent = "Серверы" + (real.length ? " — "+on+" из "+real.length+" включено" : "");
   if (!s.servers.length){
-    $("#list").innerHTML='<div class="empty"><b>Список пуст.</b> Откройте «Добавить сервер» и вставьте ссылку от провайдера или заполните форму.</div>';
+    $("#list").innerHTML='<div class="empty"><b>Список пуст.</b> Откройте «Добавить сервер» и вставьте ссылку от провайдера, ссылку подписки или заполните форму.</div>';
     return;
   }
+  const tops = s.servers.filter(x=>!x.parent);
   $("#list").innerHTML = s.servers.map((x,i)=>{
+    if (x.type==="sub") return subRow(x, tops.indexOf(x));
+    const child = !!x.parent, parent = child ? s.servers.find(p=>p.id===x.parent) : null;
     let st="dot", stTitle="выключен";
     if (x.enabled){
       if (!x.loaded){ st+=" bad"; stTitle="mihomo не принял ссылку — проверьте её"; }
@@ -320,7 +328,8 @@ function render(){
       const n=x.naive; sub = n ? ("naive: "+(n.state==="running"?"запущен":n.state)+(n.restarts?", перезапусков "+n.restarts:"")) : (state.naive_available?"naive: не запущен":"naive отсутствует в образе");
     } else if (x.enabled && !x.loaded && state.mihomo.ok){ sub="ссылка не распознана mihomo"; }
     if (x.active) sub = "используется сейчас" + (sub?"; "+sub:"");
-    return '<div class="row'+(x.enabled?"":" off")+(x.active?" active":"")+'" data-id="'+x.id+'">'+
+    if (child && !sub) sub = "из подписки «"+(parent?parent.name:"")+"»";
+    return '<div class="row'+(x.enabled?"":" off")+(x.active?" active":"")+(child?" child":"")+'" data-id="'+x.id+'">'+
       '<span class="st"><span class="'+st+'" title="'+esc(stTitle)+'"></span></span>'+
       '<div class="name">'+esc(x.name)+(sub?'<span class="sub">'+esc(sub)+'</span>':'')+'</div>'+
       '<span class="type '+esc(x.type)+'">'+esc(TYPE_LABEL[x.type]||x.type)+'</span>'+
@@ -329,13 +338,39 @@ function render(){
       '<div class="acts">'+
         (x.enabled?'<button class="btn" data-act="use"'+(x.active&&state.mode==="MANUAL"?" disabled":"")+'>Использовать</button>':'')+
         (x.enabled?'<button class="btn" data-act="test">Проверить</button>':'')+
-        '<button class="btn" data-act="edit">Изменить</button>'+
-        '<button class="btn" data-act="toggle">'+(x.enabled?"Выключить":"Включить")+'</button>'+
+        (child?'':'<button class="btn" data-act="edit">Изменить</button>'+
+          '<button class="btn" data-act="toggle">'+(x.enabled?"Выключить":"Включить")+'</button>')+
         (x.type==="naive"?'<button class="btn" data-act="log">Журнал</button>':'')+
-        (i>0?'<button class="btn" data-act="up" title="Выше в списке (важно для режима «Резерв»)" aria-label="Выше">↑</button>':'')+
-        '<button class="btn danger" data-act="del">Удалить</button>'+
+        (!child && tops.indexOf(x)>0?'<button class="btn" data-act="up" title="Выше в списке (важно для режима «Резерв»)" aria-label="Выше">↑</button>':'')+
+        (child?'':'<button class="btn danger" data-act="del">Удалить</button>')+
       '</div></div>';
   }).join("");
+}
+
+function fmtDate(t){ try{ const d=new Date(t); return isNaN(d)||d.getFullYear()<2000?"":d.toLocaleString("ru-RU",{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}); }catch{ return ""; } }
+function subRow(x, topIdx){
+  const si=x.sub||{}, err=si.error||"";
+  let st="dot"+(x.enabled?(err?" bad":(x.count?" ok":" warn")):""), stTitle=err?"ошибка обновления":(x.enabled?"подписка":"выключена");
+  const bits=[];
+  if (si.updated_at && fmtDate(si.updated_at)) bits.push("обновлена "+fmtDate(si.updated_at));
+  if (si.total>0) bits.push("трафик "+bytes((si.upload||0)+(si.download||0))+" из "+bytes(si.total));
+  if (si.expire>0) bits.push("до "+new Date(si.expire*1000).toLocaleDateString("ru-RU"));
+  const sk=Object.entries(si.skipped||{}).map(([k,n])=>k+"://×"+n).join(", ");
+  if (sk) bits.push("пропущено: "+sk);
+  return '<div class="row subrow'+(x.enabled?"":" off")+'" data-id="'+x.id+'">'+
+    '<span class="st"><span class="'+st+'" title="'+esc(stTitle)+'"></span></span>'+
+    '<div class="name">'+esc(x.name)+'<span class="sub'+(err?" err":"")+'">'+esc(err?("ошибка: "+err+(bits.length?" · ":"")):"")+esc(bits.join(" · "))+'</span></div>'+
+    '<span class="type sub">Подписка</span>'+
+    '<span class="host">'+esc(x.host)+'</span>'+
+    '<span class="ms">'+(x.count||0)+' серв.</span>'+
+    '<div class="acts">'+
+      (x.enabled?'<button class="btn" data-act="refresh">Обновить</button>':'')+
+      (x.enabled&&x.count?'<button class="btn" data-act="test">Проверить</button>':'')+
+      '<button class="btn" data-act="edit">Изменить</button>'+
+      '<button class="btn" data-act="toggle">'+(x.enabled?"Выключить":"Включить")+'</button>'+
+      (topIdx>0?'<button class="btn" data-act="up" title="Выше в списке" aria-label="Выше">↑</button>':'')+
+      '<button class="btn danger" data-act="del">Удалить</button>'+
+    '</div></div>';
 }
 
 async function guard(btn, fn){
@@ -356,9 +391,10 @@ $("#list").addEventListener("click", e=>{
   if (act==="use") return guard(b, async()=>{ await api("POST","/api/servers/"+id+"/use"); toast("Теперь трафик идёт через «"+x.name+"»"); });
   if (act==="test") return guard(b, async()=>{ b.textContent="…"; const r=await api("POST","/api/servers/"+id+"/test"); toast(r.delay>0?"«"+x.name+"»: "+r.delay+" мс":"«"+x.name+"»: нет связи", !(r.delay>0)); });
   if (act==="toggle") return guard(b, async()=>{ warnOf(await api("PUT","/api/servers/"+id,{enabled:!x.enabled})); });
-  if (act==="del"){ if(!confirm("Удалить «"+x.name+"»?")) return; return guard(b, async()=>{ warnOf(await api("DELETE","/api/servers/"+id)); toast("Удалён"); }); }
+  if (act==="del"){ if(!confirm("Удалить «"+x.name+"»"+(x.type==="sub"?" вместе с её серверами":"")+"?")) return; return guard(b, async()=>{ warnOf(await api("DELETE","/api/servers/"+id)); toast("Удалено"); }); }
+  if (act==="refresh") return guard(b, async()=>{ b.textContent="Обновляю…"; const r=await api("POST","/api/servers/"+id+"/refresh"); toast("«"+x.name+"»: "+r.count+" серв."); warnOf(r); });
   if (act==="up") return guard(b, async()=>{
-    const ids=state.servers.map(s=>s.id), i=ids.indexOf(id); [ids[i-1],ids[i]]=[ids[i],ids[i-1]];
+    const ids=state.servers.filter(s=>!s.parent).map(s=>s.id), i=ids.indexOf(id); [ids[i-1],ids[i]]=[ids[i],ids[i-1]];
     warnOf(await api("POST","/api/reorder",{ids}));
   });
   if (act==="edit") return openEdit(x);
@@ -386,7 +422,7 @@ $("#testAll").onclick=()=>guard($("#testAll"), async()=>{ $("#testAll").textCont
 
 $("#addLinks").onclick=()=>guard($("#addLinks"), async()=>{
   const r=await api("POST","/api/servers",{text:$("#links").value, name:$("#linkName").value.trim()});
-  toast("Добавлено: "+r.added+(r.errors&&r.errors.length?"\nОшибки:\n"+r.errors.join("\n"):""), r.errors&&r.errors.length>0);
+  toast("Добавлено: "+r.added+(r.subs&&r.subs.length?"\nПодписки (серверов): "+r.subs.join(", "):"")+(r.errors&&r.errors.length?"\nОшибки:\n"+r.errors.join("\n"):""), r.errors&&r.errors.length>0);
   warnOf(r);
   if (!r.errors || !r.errors.length){ $("#links").value=""; $("#linkName").value=""; }
 });

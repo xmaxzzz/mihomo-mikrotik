@@ -55,6 +55,8 @@ type Config struct {
 	StatusEvery time.Duration // сводка в журнал (RouterOS); 0 = выкл
 	LogConns    bool          // каждое новое соединение в журнал
 	StreamLevel string        // уровень журнала mihomo для веба/консоли
+	SubEvery    time.Duration // обновление подписок, если подписка не задала свой интервал
+	MixedPort   string        // mixed-порт mihomo: запасной путь скачивания подписки
 }
 
 func env(k, def string) string {
@@ -96,6 +98,8 @@ func loadConfig() Config {
 		StatusEvery: time.Duration(envInt("WEB_LOG_STATUS", 300)) * time.Second,
 		LogConns:    envBool("WEB_LOG_CONNECTIONS", false),
 		StreamLevel: env("WEB_LOG_STREAM_LEVEL", "info"),
+		SubEvery:    time.Duration(envInt("WEB_SUB_INTERVAL", 12)) * time.Hour,
+		MixedPort:   env("MIXED_PORT", "1080"),
 	}
 }
 
@@ -152,6 +156,7 @@ type App struct {
 	mon    *Monitor
 	log    *slog.Logger
 	applyM sync.Mutex
+	subM   sync.Mutex // одно обновление подписок за раз
 }
 
 func serve(cfg Config, store *Store, logger *slog.Logger) int {
@@ -176,7 +181,8 @@ func serve(cfg Config, store *Store, logger *slog.Logger) int {
 	if err := store.Render(); err != nil {
 		logger.Error("render failed", "err", err)
 	}
-	app.naive.Sync(store.List())
+	app.naive.Sync(store.Expanded())
+	go app.subLoop(monCtx)
 
 	if cfg.Password == "" {
 		logger.Warn("WEB_PASSWORD и UI_SECRET не заданы — панель открыта без пароля")
@@ -256,6 +262,7 @@ func (a *App) routes(local bool) http.Handler {
 	mux.HandleFunc("DELETE /api/servers/{id}", a.hDelete)
 	mux.HandleFunc("POST /api/servers/{id}/test", a.hTest)
 	mux.HandleFunc("POST /api/servers/{id}/use", a.hUse)
+	mux.HandleFunc("POST /api/servers/{id}/refresh", a.hRefresh)
 	mux.HandleFunc("GET /api/servers/{id}/log", a.hLog)
 	mux.HandleFunc("POST /api/test-all", a.hTestAll)
 	mux.HandleFunc("POST /api/mode", a.hMode)
@@ -305,7 +312,7 @@ func (a *App) middleware(next http.Handler, local bool) http.Handler {
 func (a *App) apply(ctx context.Context) string {
 	a.applyM.Lock()
 	defer a.applyM.Unlock()
-	list := a.store.List()
+	list := a.store.Expanded()
 	a.naive.Sync(list)
 	if hasNaive(list) {
 		time.Sleep(700 * time.Millisecond) // дать naive открыть порт до health-check
@@ -345,6 +352,7 @@ type serverView struct {
 	Delay   int          `json:"delay"`
 	Active  bool         `json:"active"`
 	Naive   *NaiveStatus `json:"naive,omitempty"`
+	Count   int          `json:"count,omitempty"` // подписка: сколько серверов
 }
 
 func (a *App) hState(w http.ResponseWriter, r *http.Request) {
@@ -378,9 +386,19 @@ func (a *App) hState(w http.ResponseWriter, r *http.Request) {
 		current = manual
 	}
 	views := []serverView{}
-	for _, s := range a.store.List() {
+	for _, s := range a.store.Expanded() {
 		v := serverView{Server: s, Proxies: ProxyNames(&s), Delay: -1}
 		v.URI = "" // ссылки с секретами отдаём только в редактировании/экспорте
+		if s.Type == "sub" {
+			v.Host, v.Proxies = subHost(s.URI), nil
+			if s.Sub != nil {
+				si := *s.Sub
+				v.Count, si.Items = len(si.Items), nil // ссылки серверов подписки не отдаём
+				v.Sub = &si
+			}
+			views = append(views, v)
+			continue
+		}
 		if p, err := ParseURI(s.URI); err == nil {
 			v.Host, v.Port = p.Host, p.Port
 		}
@@ -418,7 +436,8 @@ func (a *App) hAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var added []Server
-	var errs []string
+	var errs, subs []string
+	en := wantEN(r)
 	lines := strings.Split(strings.ReplaceAll(req.Text, "\r", ""), "\n")
 	nonEmpty := 0
 	for _, ln := range lines {
@@ -433,13 +452,21 @@ func (a *App) hAdd(w http.ResponseWriter, r *http.Request) {
 		}
 		s, err := a.store.Add(ln, name)
 		if err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", short(ln), err))
+			errs = append(errs, fmt.Sprintf("%s: %s", short(ln), errText(err, en)))
 			continue
 		}
 		added = append(added, s)
+		if s.Type == "sub" {
+			if n, err := a.refreshSub(r.Context(), s.ID); err != nil {
+				errs = append(errs, fmt.Sprintf("%s: %s (%s)", s.Name, errText(err, en),
+					tr(r, "подписка добавлена, обновите её позже", "subscription added, refresh it later")))
+			} else {
+				subs = append(subs, fmt.Sprintf("%s: %d", s.Name, n))
+			}
+		}
 	}
 	if nonEmpty == 0 {
-		writeErr(w, http.StatusBadRequest, "вставьте хотя бы одну ссылку")
+		writeErr(w, http.StatusBadRequest, tr(r, "вставьте хотя бы одну ссылку", "paste at least one link"))
 		return
 	}
 	warn := ""
@@ -450,7 +477,7 @@ func (a *App) hAdd(w http.ResponseWriter, r *http.Request) {
 	if len(added) == 0 {
 		code = http.StatusBadRequest
 	}
-	writeJSON(w, code, map[string]any{"added": len(added), "errors": errs, "warning": warn})
+	writeJSON(w, code, map[string]any{"added": len(added), "errors": errs, "warning": warn, "subs": subs})
 }
 
 func (a *App) hUpdate(w http.ResponseWriter, r *http.Request) {
@@ -462,21 +489,29 @@ func (a *App) hUpdate(w http.ResponseWriter, r *http.Request) {
 	if p.URI != nil && strings.TrimSpace(*p.URI) == "" {
 		p.URI = nil // пустое поле = ссылку не менять
 	}
+	before, _ := a.store.Get(id)
 	s, err := a.store.Update(id, p)
 	if err != nil {
 		code := http.StatusBadRequest
 		if errors.Is(err, errNotFound) {
 			code = http.StatusNotFound
 		}
-		writeErr(w, code, err.Error())
+		writeErr(w, code, errText(err, wantEN(r)))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"server": s.ID, "warning": a.apply(r.Context())})
+	out := map[string]any{"server": s.ID}
+	if s.Type == "sub" && s.Enabled && (s.URI != before.URI || !before.Enabled) {
+		if _, err := a.refreshSub(r.Context(), s.ID); err != nil {
+			out["error"] = errText(err, wantEN(r))
+		}
+	}
+	out["warning"] = a.apply(r.Context())
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *App) hDelete(w http.ResponseWriter, r *http.Request) {
 	if err := a.store.Delete(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusNotFound, err.Error())
+		writeErr(w, http.StatusNotFound, errText(err, wantEN(r)))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"warning": a.apply(r.Context())})
@@ -485,12 +520,12 @@ func (a *App) hDelete(w http.ResponseWriter, r *http.Request) {
 func (a *App) hTest(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.store.Get(r.PathValue("id"))
 	if !ok {
-		writeErr(w, http.StatusNotFound, errNotFound.Error())
+		writeErr(w, http.StatusNotFound, errText(errNotFound, wantEN(r)))
 		return
 	}
 	res := map[string]int{}
 	best := 0
-	for _, pn := range ProxyNames(&s) {
+	for _, pn := range a.proxyNamesFor(s) {
 		ctx, cancel := context.WithTimeout(r.Context(), time.Duration(a.cfg.TimeoutMs+3000)*time.Millisecond)
 		d, err := a.mh.Delay(ctx, pn, a.cfg.TimeoutMs)
 		cancel()
@@ -509,7 +544,7 @@ func (a *App) hTestAll(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()
 	if err := a.mh.HealthCheckAll(ctx); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err, wantEN(r)))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -518,16 +553,20 @@ func (a *App) hTestAll(w http.ResponseWriter, r *http.Request) {
 func (a *App) hUse(w http.ResponseWriter, r *http.Request) {
 	s, ok := a.store.Get(r.PathValue("id"))
 	if !ok {
-		writeErr(w, http.StatusNotFound, errNotFound.Error())
+		writeErr(w, http.StatusNotFound, errText(errNotFound, wantEN(r)))
+		return
+	}
+	if s.Type == "sub" {
+		writeErr(w, http.StatusBadRequest, tr(r, "это подписка — выберите сервер из неё", "this is a subscription - pick one of its servers"))
 		return
 	}
 	if !s.Enabled {
-		writeErr(w, http.StatusBadRequest, "сервер выключен — сначала включите его")
+		writeErr(w, http.StatusBadRequest, tr(r, "сервер выключен — сначала включите его", "server is disabled - enable it first"))
 		return
 	}
 	names := ProxyNames(&s)
 	if len(names) == 0 {
-		writeErr(w, http.StatusBadRequest, "у сервера нет прокси")
+		writeErr(w, http.StatusBadRequest, tr(r, "у сервера нет прокси", "server has no proxies"))
 		return
 	}
 	name := names[0]
@@ -541,11 +580,11 @@ func (a *App) hUse(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := a.mh.Select(ctx, a.cfg.GroupMan, name); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err, wantEN(r)))
 		return
 	}
 	if err := a.mh.Select(ctx, a.cfg.GroupSel, a.cfg.GroupMan); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err, wantEN(r)))
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
@@ -564,13 +603,13 @@ func (a *App) hMode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !allowedModes[req.Mode] {
-		writeErr(w, http.StatusBadRequest, "неизвестный режим")
+		writeErr(w, http.StatusBadRequest, tr(r, "неизвестный режим", "unknown mode"))
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 	if err := a.mh.Select(ctx, a.cfg.GroupSel, req.Mode); err != nil {
-		writeErr(w, http.StatusBadGateway, err.Error())
+		writeErr(w, http.StatusBadGateway, errText(err, wantEN(r)))
 		return
 	}
 	_ = a.mh.CloseConnections(ctx)
@@ -588,8 +627,8 @@ func (a *App) hReorder(w http.ResponseWriter, r *http.Request) {
 	}
 	for i, id := range req.IDs {
 		o := i
-		if _, err := a.store.Update(id, Patch{Order: &o}); err != nil && !errors.Is(err, errNotFound) {
-			writeErr(w, http.StatusInternalServerError, err.Error())
+		if _, err := a.store.Update(id, Patch{Order: &o}); err != nil && !errors.Is(err, errNotFound) && !errors.Is(err, errChild) {
+			writeErr(w, http.StatusInternalServerError, errText(err, wantEN(r)))
 			return
 		}
 	}
@@ -604,7 +643,7 @@ func (a *App) hExport(w http.ResponseWriter, r *http.Request) {
 	if id := r.URL.Query().Get("id"); id != "" {
 		s, ok := a.store.Get(id)
 		if !ok {
-			writeErr(w, http.StatusNotFound, errNotFound.Error())
+			writeErr(w, http.StatusNotFound, errText(errNotFound, wantEN(r)))
 			return
 		}
 		writeJSON(w, http.StatusOK, s)
@@ -622,21 +661,22 @@ func (a *App) hImport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if len(req.Servers) == 0 {
-		writeErr(w, http.StatusBadRequest, "в файле нет серверов")
+		writeErr(w, http.StatusBadRequest, tr(r, "в файле нет серверов", "no servers in the file"))
 		return
 	}
 	n, errs, err := a.store.Replace(req.Servers)
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err.Error())
+		writeErr(w, http.StatusInternalServerError, errText(err, wantEN(r)))
 		return
 	}
+	go a.refreshDue(context.Background(), true) // подписки из бэкапа — обновить
 	writeJSON(w, http.StatusOK, map[string]any{"imported": n, "errors": errs, "warning": a.apply(r.Context())})
 }
 
 func readJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	dec := json.NewDecoder(io.LimitReader(r.Body, 2<<20))
 	if err := dec.Decode(v); err != nil {
-		writeErr(w, http.StatusBadRequest, "неверный JSON: "+err.Error())
+		writeErr(w, http.StatusBadRequest, tr(r, "неверный JSON: ", "bad JSON: ")+err.Error())
 		return false
 	}
 	return true
@@ -702,4 +742,102 @@ func listenUnix(path string) (net.Listener, error) {
 		return nil, err
 	}
 	return ln, nil
+}
+
+// proxyNamesFor — имена прокси в mihomo; у подписки — всех её серверов.
+func (a *App) proxyNamesFor(s Server) []string {
+	if s.Type != "sub" {
+		return ProxyNames(&s)
+	}
+	var out []string
+	for _, sv := range a.store.Expanded() {
+		if sv.Parent == s.ID {
+			out = append(out, ProxyNames(&sv)...)
+		}
+	}
+	return out
+}
+
+// refreshSub скачивает подписку и сохраняет её серверы. Возвращает число серверов.
+// apply (naive + reload mihomo) — на вызывающем.
+func (a *App) refreshSub(ctx context.Context, id string) (int, error) {
+	sv, ok := a.store.Get(id)
+	if !ok || sv.Type != "sub" {
+		return 0, errNotFound
+	}
+	a.subM.Lock()
+	defer a.subM.Unlock()
+	fctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	res, ferr := FetchSub(fctx, sv.URI, "http://127.0.0.1:"+a.cfg.MixedPort, "mihomo-web/"+version)
+	changed, err := a.store.SetSubResult(id, res, ferr)
+	if err != nil {
+		return 0, err
+	}
+	if ferr != nil {
+		a.log.Warn(rosLine("subscription refresh failed: "+sv.Name), "err", errText(ferr, true))
+		a.mon.Event("bad", "подписка «"+sv.Name+"»: "+errText(ferr, false), "subscription "+sv.Name+": "+errText(ferr, true))
+		return 0, ferr
+	}
+	n := len(res.Items)
+	a.log.Info(rosLine(fmt.Sprintf("subscription %s: %d servers, changed=%v, skipped=%s", sv.Name, n, changed, skippedText(res.Skipped))))
+	if changed {
+		a.mon.Event("info", fmt.Sprintf("подписка «%s» обновлена: %d серверов", sv.Name, n),
+			fmt.Sprintf("subscription %s updated: %d servers", sv.Name, n))
+	}
+	return n, nil
+}
+
+// refreshDue обновляет подписки, которым пора (force — все включённые), и применяет изменения.
+func (a *App) refreshDue(ctx context.Context, force bool) {
+	now := time.Now()
+	did := false
+	for _, sv := range a.store.List() {
+		if sv.Type != "sub" || !sv.Enabled {
+			continue
+		}
+		if !force && !subDue(sv, now, a.cfg.SubEvery, 30*time.Minute) {
+			continue
+		}
+		if _, err := a.refreshSub(ctx, sv.ID); err == nil {
+			did = true
+		}
+	}
+	if did {
+		a.apply(ctx)
+	}
+}
+
+// subLoop — фоновое обновление подписок.
+func (a *App) subLoop(ctx context.Context) {
+	select {
+	case <-ctx.Done():
+		return
+	case <-time.After(30 * time.Second): // дать mihomo подняться
+	}
+	t := time.NewTicker(10 * time.Minute)
+	defer t.Stop()
+	for {
+		a.refreshDue(ctx, false)
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+	}
+}
+
+func (a *App) hRefresh(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	sv, ok := a.store.Get(id)
+	if !ok || sv.Type != "sub" {
+		writeErr(w, http.StatusNotFound, tr(r, "подписка не найдена", "subscription not found"))
+		return
+	}
+	n, err := a.refreshSub(r.Context(), id)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, errText(err, wantEN(r)))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n, "warning": a.apply(r.Context())})
 }

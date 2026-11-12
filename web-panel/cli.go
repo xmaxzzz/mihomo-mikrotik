@@ -26,7 +26,7 @@ import (
 )
 
 var cliCommands = map[string]bool{"menu": true, "tui": true, "status": true, "list": true, "use": true,
-	"mode": true, "test": true, "conns": true, "logs": true, "add": true, "help": true}
+	"mode": true, "test": true, "conns": true, "logs": true, "add": true, "help": true, "refresh": true}
 
 func isCLI(cmd string) bool { return cliCommands[cmd] }
 
@@ -97,6 +97,12 @@ func runCLI(cfg Config, cmd string, args []string) int {
 	case "add":
 		b, _ := io.ReadAll(os.Stdin)
 		err = c.add(string(b))
+	case "refresh":
+		if len(args) == 0 {
+			err = c.refreshAll()
+			break
+		}
+		err = c.cmdRefresh(strings.Join(args, " "))
 	case "help":
 		c.help()
 	}
@@ -163,6 +169,9 @@ func (c *cli) call(method, path string, body, out any) error {
 		return err
 	}
 	req.Header.Set("X-Mihomo-Web", "1")
+	if asciiOut {
+		req.Header.Set("Accept-Language", "en") // ошибки сервера — по-английски
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -411,6 +420,10 @@ func (c *cli) printServers(s *cliState) {
 	fmt.Println(c.dim(" #  " + pad("", 2) + pad(L("Имя", "Name"), 20) + " " + pad(L("Тип", "Type"), 7) + " " +
 		pad(L("Адрес", "Address"), 30) + " " + padL(L("Пинг", "Ping"), 10)))
 	for i, x := range s.Servers {
+		if x.Type == "sub" {
+			c.printSubRow(i+1, x)
+			continue
+		}
 		var mark string
 		switch {
 		case !x.Enabled:
@@ -425,6 +438,9 @@ func (c *cli) printServers(s *cliState) {
 			mark = c.yellow(sym("●", "?"))
 		}
 		name := pad(x.Name, 20)
+		if x.Parent != "" { // сервер из подписки — с отступом
+			name = sym(" └ ", " `-") + pad(x.Name, 17)
+		}
 		if x.Active {
 			name = c.bold(name)
 		}
@@ -455,6 +471,36 @@ func (c *cli) printServers(s *cliState) {
 		}
 		fmt.Printf("%2d  %s %s %s %s %s%s\n", i+1, mark, name, pad(firstNonEmpty(typeShort[x.Type], x.Type), 7), pad(addr, 30), ping, note)
 	}
+}
+
+// printSubRow — строка подписки: сколько серверов, когда обновлена, ошибка, остаток трафика.
+func (c *cli) printSubRow(n int, x serverView) {
+	mark := c.cyan(sym("◆", "#"))
+	if !x.Enabled {
+		mark = c.dim(sym("·", "-"))
+	} else if x.Sub != nil && x.Sub.Error != "" {
+		mark = c.red(sym("◆", "#"))
+	}
+	count := padL(fmt.Sprintf(L("%d серв.", "%d srv"), x.Count), 10)
+	if !x.Enabled {
+		count = c.dim(padL(L("выкл", "off"), 10))
+	}
+	note := ""
+	if x.Sub != nil {
+		if !x.Sub.UpdatedAt.IsZero() {
+			note += c.dim(" " + L("обновлена ", "updated ") + x.Sub.UpdatedAt.Local().Format("02.01 15:04"))
+		}
+		if x.Sub.Total > 0 {
+			note += c.dim(fmt.Sprintf(" %s %s/%s", L("трафик", "traffic"), bytesHuman(x.Sub.Upload+x.Sub.Download), bytesHuman(x.Sub.Total)))
+		}
+		if x.Sub.Expire > 0 {
+			note += c.dim(" " + L("до ", "until ") + time.Unix(x.Sub.Expire, 0).Format("02.01.2006"))
+		}
+		if e := firstNonEmpty(L(x.Sub.Error, x.Sub.ErrorEN), x.Sub.Error); e != "" {
+			note += c.red(" " + e)
+		}
+	}
+	fmt.Printf("%2d  %s %s %s %s %s%s\n", n, mark, c.bold(pad(x.Name, 20)), pad(L("Подп.", "SUB"), 7), pad(x.Host, 30), count, note)
 }
 
 var typeShort = map[string]string{"vless": "VLESS", "hysteria2": "HY2", "mieru": "Mieru", "naive": "Naive", "vmess": "VMess",
@@ -811,10 +857,14 @@ func (c *cli) add(text string) error {
 		Added   int      `json:"added"`
 		Errors  []string `json:"errors"`
 		Warning string   `json:"warning"`
+		Subs    []string `json:"subs"`
 	}
 	err := c.call(http.MethodPost, "/api/servers", map[string]string{"text": text}, &r)
 	if r.Added > 0 {
 		fmt.Printf("%s %s %d\n", c.green(sym("✓", "+")), L("добавлено:", "added:"), r.Added)
+	}
+	for _, s := range r.Subs {
+		fmt.Printf("  %s %s\n", L("подписка", "subscription"), s+L(" серв.", " servers"))
 	}
 	for _, e := range r.Errors {
 		fmt.Println(c.red(sym("  ✕ ", "  x ")) + e)
@@ -837,12 +887,13 @@ func (c *cli) help() {
   c N         проверить N           j [текст] журнал mihomo (фильтр)
   t           проверить все         f [текст] журнал вживую
   m           режим (авто/резерв/вручную/балансировка/без VPN)
-  a           добавить (вставить ссылки)
+  a           добавить (ссылки на серверы или https://… подписку)
   e N         изменить N            o N       включить/выключить N
   k N         поднять N выше        d N       удалить N
-  l N         журнал naive N        b         бэкап (JSON на экран)
-  q           выход
-Разовые команды: vpn status | list | use N | mode auto | test [N] | conns [текст] | logs [-f] [текст]
+  p N         обновить подписку N   l N       журнал naive N
+  b           бэкап (JSON на экран) q         выход
+Серверы из подписки (с отступом) только используются и проверяются; менять — подписку целиком.
+Разовые команды: vpn status | list | use N | mode auto | test [N] | refresh [N] | conns [текст] | logs [-f] [текст]
 Язык: в терминале RouterOS (только ASCII) — английский; vpn --en / --ru — выбрать явно.
 `, `Commands (N = server number from the list):
   Enter / r   refresh               w         live monitor: speed and requests
@@ -850,12 +901,13 @@ func (c *cli) help() {
   c N         test server N         j [text]  mihomo log (filter)
   t           test all              f [text]  follow mihomo log
   m           mode (auto / fallback / manual / load balance / no VPN)
-  a           add servers (paste links)
+  a           add (server links or an https://... subscription)
   e N         edit N                o N       enable / disable N
   k N         move N up             d N       delete N
-  l N         naive log of N        b         backup (JSON on screen)
-  q           quit
-One-shot: vpn status | list | use N | mode auto | test [N] | conns [text] | logs [-f] [text]
+  p N         refresh subscription  l N       naive log of N
+  b           backup (JSON)         q         quit
+Servers from a subscription (indented) can only be used and tested; edit the subscription itself.
+One-shot: vpn status | list | use N | mode auto | test [N] | refresh [N] | conns [text] | logs [-f] [text]
 Language: English in the RouterOS terminal (ASCII only); vpn --ru for Russian in a UTF-8 terminal.
 `))
 }
@@ -896,8 +948,8 @@ func (c *cli) menu() error {
 		if msg != "" {
 			fmt.Println(msg)
 		}
-		fmt.Println(c.dim(L("u N использовать · c N проверить · t все · m режим · a добавить · e/o/d/k N · w монитор · s соединения · j журнал · ? помощь · q выход",
-			"u N use | c N test | t test all | m mode | a add | e/o/d/k N | w monitor | s connections | j log | ? help | q quit")))
+		fmt.Println(c.dim(L("u N использовать · c N проверить · t все · m режим · a добавить · p N обновить подписку · e/o/d/k N · w монитор · s соединения · j журнал · ? помощь · q выход",
+			"u N use | c N test | t test all | m mode | a add | p N refresh sub | e/o/d/k N | w monitor | s conns | j log | ? help | q quit")))
 		line, ok := c.readLine("> ")
 		if !ok {
 			fmt.Println()
@@ -955,6 +1007,9 @@ func (c *cli) menu() error {
 			})
 		case "k":
 			cerr = c.withArg(arg, func(a string) error { return c.moveUp(s, a) })
+		case "p":
+			cerr = c.withArg(arg, c.cmdRefresh)
+			c.pause()
 		case "l":
 			cerr = c.withArg(arg, func(a string) error {
 				x, err := c.pick(a)
@@ -1049,8 +1104,8 @@ func (c *cli) menuMode(cur string) error {
 }
 
 func (c *cli) menuAdd() error {
-	fmt.Println(L("Вставьте ссылки по одной в строке (vless://, hy2://, mierus://, naive+https://…).",
-		"Paste links, one per line (vless://, hy2://, mierus://, naive+https://...)."))
+	fmt.Println(L("Вставьте ссылки по одной в строке (vless://, hy2://, mierus://, naive+https://…) или ссылку подписки https://….",
+		"Paste links, one per line (vless://, hy2://, mierus://, naive+https://...) or a subscription link https://...."))
 	fmt.Println(c.dim(L("Пустая строка — закончить.", "Empty line to finish.")))
 	var lines []string
 	for {
@@ -1098,15 +1153,73 @@ func (c *cli) menuEdit(arg string) error {
 	return c.call(http.MethodPut, "/api/servers/"+x.ID, p, nil)
 }
 
+// moveUp — поднять сервер или подписку на одну позицию среди строк верхнего уровня
+// (серверы подписки двигаются вместе с ней).
 func (c *cli) moveUp(s *cliState, arg string) error {
 	n, err := strconv.Atoi(arg)
-	if err != nil || n < 2 || n > len(s.Servers) {
-		return fmt.Errorf(L("укажите номер 2…%d", "give a number 2..%d"), len(s.Servers))
+	if err != nil || n < 1 || n > len(s.Servers) {
+		return fmt.Errorf(L("укажите номер 1…%d", "give a number 1..%d"), len(s.Servers))
 	}
-	ids := make([]string, len(s.Servers))
-	for i, x := range s.Servers {
-		ids[i] = x.ID
+	if s.Servers[n-1].Parent != "" {
+		return errors.New(L("это сервер из подписки — двигайте подписку", "this server comes from a subscription - move the subscription"))
 	}
-	ids[n-2], ids[n-1] = ids[n-1], ids[n-2]
+	var ids []string
+	pos := -1
+	for _, x := range s.Servers {
+		if x.Parent == "" {
+			if x.ID == s.Servers[n-1].ID {
+				pos = len(ids)
+			}
+			ids = append(ids, x.ID)
+		}
+	}
+	if pos < 1 {
+		return nil // уже первый
+	}
+	ids[pos-1], ids[pos] = ids[pos], ids[pos-1]
 	return c.call(http.MethodPost, "/api/reorder", map[string]any{"ids": ids}, nil)
+}
+
+// cmdRefresh — обновить подписку (по номеру строки подписки или её имени).
+func (c *cli) cmdRefresh(arg string) error {
+	x, err := c.pick(arg)
+	if err != nil {
+		return err
+	}
+	if x.Type != "sub" {
+		return errors.New(L("это не подписка", "not a subscription"))
+	}
+	fmt.Printf("%s %s%s\n", L("Обновляю", "Refreshing"), shown(x.Name), sym("…", "..."))
+	var r struct {
+		Count   int    `json:"count"`
+		Warning string `json:"warning"`
+	}
+	if err := c.call(http.MethodPost, "/api/servers/"+x.ID+"/refresh", nil, &r); err != nil {
+		return err
+	}
+	fmt.Printf("%s %s: %d%s\n", c.green(sym("✓", "+")), shown(x.Name), r.Count, L(" серв.", " servers"))
+	if r.Warning != "" {
+		fmt.Println(c.yellow(L("  mihomo не перечитал список: ", "  mihomo did not reload the list: ")) + r.Warning)
+	}
+	return nil
+}
+
+func (c *cli) refreshAll() error {
+	s, err := c.state()
+	if err != nil {
+		return err
+	}
+	found := false
+	for i, x := range s.Servers {
+		if x.Type == "sub" && x.Enabled {
+			found = true
+			if err := c.cmdRefresh(strconv.Itoa(i + 1)); err != nil {
+				fmt.Println(c.red(L("  ошибка: ", "  error: ")) + err.Error())
+			}
+		}
+	}
+	if !found {
+		fmt.Println(L("Подписок нет.", "No subscriptions."))
+	}
+	return nil
 }
